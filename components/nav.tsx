@@ -25,6 +25,18 @@ export default function Nav() {
       <span className="font-mono text-xs hidden lg:flex items-center gap-1.5 text-zinc-400 dark:text-zinc-700">
         <span className="text-green-500 dark:text-green-400">●</span> open to work
       </span>
+      <Link
+        href="/play"
+        className="font-mono text-xs text-zinc-500 dark:text-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-300 transition-colors hidden sm:block"
+      >
+        /play
+      </Link>
+      <Link
+        href="/blog"
+        className="font-mono text-xs text-zinc-500 dark:text-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-300 transition-colors hidden sm:block"
+      >
+        /blog
+      </Link>
       <ThemeToggle />
     </nav>
   );

@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Toddler's World</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #87CEEB; }
+    canvas { display: block; }
+
+    #loading {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: linear-gradient(160deg, #a8d8ea 0%, #7ec850 100%);
+      font-family: 'Segoe UI', sans-serif; color: #fff;
+      font-size: 20px; letter-spacing: 0.06em;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      transition: opacity 0.8s ease; z-index: 100;
+    }
+    #loading .dots { margin-top: 18px; display: flex; gap: 8px; }
+    #loading .dots span {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: rgba(255,255,255,0.85);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    #loading .dots span:nth-child(2) { animation-delay: 0.2s; }
+    #loading .dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes pulse {
+      0%,100% { transform: scale(0.55); opacity: 0.35; }
+      50%      { transform: scale(1.0);  opacity: 1.0;  }
+    }
+
+    #controls {
+      position: fixed; bottom: 32px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 14px; z-index: 10;
+    }
+    .btn {
+      display: flex; align-items: center; gap: 7px;
+      background: rgba(255,255,255,0.18);
+      backdrop-filter: blur(14px) saturate(1.6);
+      -webkit-backdrop-filter: blur(14px) saturate(1.6);
+      border: 1.5px solid rgba(255,255,255,0.45);
+      border-radius: 60px; padding: 11px 22px;
+      color: rgba(255,255,255,0.95);
+      font-family: 'Segoe UI', sans-serif;
+      font-size: 13px; font-weight: 600;
+      letter-spacing: 0.05em; cursor: pointer;
+      transition: background 0.18s, transform 0.15s, box-shadow 0.18s;
+      user-select: none;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.25);
+    }
+    .btn:hover { background: rgba(255,255,255,0.30); transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.18); }
+    .btn.active {
+      background: rgba(255,255,255,0.42);
+      border-color: rgba(255,255,255,0.75);
+      box-shadow: 0 0 0 3px rgba(255,255,255,0.22), 0 8px 28px rgba(0,0,0,0.22);
+      transform: translateY(-2px);
+    }
+    .btn .icon { font-size: 17px; line-height: 1; }
+
+    #hud {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 18px; z-index: 10; pointer-events: none;
+    }
+    .hud-pill {
+      background: rgba(0,0,0,0.35); backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.2); border-radius: 30px;
+      padding: 7px 18px; font-family: 'Segoe UI', sans-serif;
+      font-size: 13px; color: #fff; letter-spacing: 0.04em;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      display: flex; align-items: center; gap: 6px;
+    }
+    #status-pill {
+      position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.5); backdrop-filter: blur(10px);
+      border-radius: 20px; padding: 5px 16px;
+      font-family: 'Segoe UI', sans-serif; font-size: 12px;
+      color: #fff; z-index: 10; pointer-events: none;
+      opacity: 0; transition: opacity 0.3s;
+    }
+
+    #hint {
+      position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+      background: rgba(255,255,255,0.18); backdrop-filter: blur(12px);
+      border-radius: 30px; padding: 7px 18px;
+      font-family: 'Segoe UI', sans-serif; font-size: 12px;
+      color: rgba(255,255,255,0.9); pointer-events: none;
+      letter-spacing: 0.04em; text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading">
+  Loading world…
+  <div class="dots"><span></span><span></span><span></span></div>
+</div>
+
+<div id="hud">
+  <div class="hud-pill">🪙 <span id="coin-count">0</span></div>
+  <div class="hud-pill" id="zone-label">🌿 Meadow</div>
+</div>
+<div id="status-pill"></div>
+
+<div id="hint">← → ↑ ↓ move &nbsp;·&nbsp; Mouse drag orbit</div>
+
+<div id="controls">
+  <button class="btn active" data-action="Walking"><span class="icon">🚶</span> Walk</button>
+  <button class="btn" data-action="Running"><span class="icon">🏃</span> Run</button>
+  <button class="btn" data-action="Dance"><span class="icon">💃</span> Dance</button>
+  <button class="btn" data-action="Jump"><span class="icon">🦘</span> Jump</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+import { RGBELoader  }   from 'three/addons/loaders/RGBELoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ─── RENDERER ────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+renderer.toneMapping       = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+// ─── SCENE / CAMERA ──────────────────────────────────────────────────────────
+const scene  = new THREE.Scene();
+scene.fog    = new THREE.FogExp2(0xaad4f0, 0.014);
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(0, 5, 12);
+
+// ─── LIGHTS ──────────────────────────────────────────────────────────────────
+const sun = new THREE.DirectionalLight(0xfff4e0, 3.2);
+sun.position.set(30, 60, 20);
+sun.castShadow = true;
+sun.shadow.mapSize.setScalar(4096);
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 200;
+const sc = sun.shadow.camera;
+sc.left = sc.bottom = -60; sc.right = sc.top = 60;
+sun.shadow.bias = -0.0005;
+scene.add(sun); scene.add(sun.target);
+
+scene.add(new THREE.HemisphereLight(0x9ed8f5, 0x6ab04c, 1.2));
+const fill = new THREE.DirectionalLight(0xffecd2, 0.4);
+fill.position.set(-20, 10, -15); scene.add(fill);
+
+// ─── HDR ENV ─────────────────────────────────────────────────────────────────
+new RGBELoader().load(
+  'https://threejs.org/examples/textures/equirectangular/lobe.hdr',
+  hdr => {
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    scene.environment = hdr;
+    scene.environmentIntensity = 0.6;
+    scene.background = new THREE.Color(0x87ceeb);
+  }
+);
+
+// ─── TERRAIN HEIGHT FUNCTION ─────────────────────────────────────────────────
+// Returns {y, normal, zone} for any (x,z)
+// zones: 'grass' | 'water' | 'slippery' | 'hill'
+const LAKE_CENTER   = new THREE.Vector2(-18, 12);
+const LAKE_RADIUS   = 11;
+const LAKE_DEPTH    = -1.8;
+
+function terrainHeight(x, z) {
+  // Distance from lake center
+  const dx = x - LAKE_CENTER.x, dz = z - LAKE_CENTER.y;
+  const lDist = Math.sqrt(dx * dx + dz * dz);
+
+  // Hill mounds
+  const h1 = 4.5  * Math.exp(-((x-22)*(x-22) + (z-8)*(z-8))  / 120);
+  const h2 = 3.2  * Math.exp(-((x+5)*(x+5)   + (z+20)*(z+20)) / 90);
+  const h3 = 2.8  * Math.exp(-((x-8)*(x+8)   + (z-25)*(z-25)) / 80);
+  const h4 = 5.0  * Math.exp(-((x-30)*(x-30) + (z-22)*(z-22)) / 160);
+  const hills = h1 + h2 + h3 + h4;
+
+  // Gentle rolling base
+  const roll = Math.sin(x * 0.18) * Math.cos(z * 0.14) * 0.35
+             + Math.sin(x * 0.09 + 1.2) * Math.sin(z * 0.11) * 0.2;
+
+  let y = hills + roll;
+
+  // Lake basin
+  if (lDist < LAKE_RADIUS) {
+    const t = Math.max(0, 1 - lDist / LAKE_RADIUS);
+    y = y * (1 - t) + LAKE_DEPTH * t * t;
+  }
+
+  return y;
+}
+
+function getZone(x, z) {
+  const dx = x - LAKE_CENTER.x, dz = z - LAKE_CENTER.y;
+  const lDist = Math.sqrt(dx * dx + dz * dz);
+  if (lDist < LAKE_RADIUS - 0.5)    return 'water';
+  if (lDist < LAKE_RADIUS + 1.5)    return 'slippery'; // wet shore
+
+  // Slippery patches (wet pavement)
+  const sx1 = Math.abs(x - 8)  < 3 && Math.abs(z - 5)  < 2;
+  const sx2 = Math.abs(x + 12) < 2.5 && Math.abs(z - 18) < 3;
+  if (sx1 || sx2)                    return 'slippery';
+
+  const h = terrainHeight(x, z);
+  if (h > 2.5)                       return 'hill';
+  return 'grass';
+}
+
+// ─── TERRAIN MESH ─────────────────────────────────────────────────────────────
+const TSIZE = 120, TSEG = 100;
+const tGeo  = new THREE.PlaneGeometry(TSIZE, TSIZE, TSEG, TSEG);
+tGeo.rotateX(-Math.PI / 2);
+const tPos  = tGeo.attributes.position;
+for (let i = 0; i < tPos.count; i++) {
+  const x = tPos.getX(i), z = tPos.getZ(i);
+  tPos.setY(i, terrainHeight(x, z));
+}
+tGeo.computeVertexNormals();
+
+// Vertex-color grass/dirt blend
+const tColors = new Float32Array(tPos.count * 3);
+for (let i = 0; i < tPos.count; i++) {
+  const x = tPos.getX(i), z = tPos.getZ(i);
+  const zone = getZone(x, z);
+  let r,g,b;
+  if (zone === 'water')     { r=0.15; g=0.35; b=0.65; }
+  else if (zone === 'slippery') { r=0.55; g=0.58; b=0.62; }
+  else {
+    const h = terrainHeight(x, z);
+    if (h > 3.5) { r=0.52; g=0.44; b=0.32; }       // rocky peak
+    else         { r=0.22+Math.random()*0.04; g=0.58+Math.random()*0.06; b=0.18; } // grass
+  }
+  tColors[i*3]=r; tColors[i*3+1]=g; tColors[i*3+2]=b;
+}
+tGeo.setAttribute('color', new THREE.BufferAttribute(tColors, 3));
+
+const tMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+const terrain = new THREE.Mesh(tGeo, tMat);
+terrain.receiveShadow = true;
+scene.add(terrain);
+
+// ─── WATER SURFACE ───────────────────────────────────────────────────────────
+const waterGeo = new THREE.CircleGeometry(LAKE_RADIUS - 0.5, 64);
+const waterMat = new THREE.MeshStandardMaterial({
+  color: 0x1a6fa8, transparent: true, opacity: 0.82,
+  roughness: 0.1, metalness: 0.3, envMapIntensity: 1.2,
+});
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.rotation.x = -Math.PI / 2;
+water.position.set(LAKE_CENTER.x, LAKE_DEPTH + 0.05, LAKE_CENTER.y);
+water.receiveShadow = true;
+scene.add(water);
+
+// Animate water ripples
+let waterTime = 0;
+
+// ─── SLIPPERY ZONE VISUALS ────────────────────────────────────────────────────
+function makeSlipperyPatch(x, z, w, d) {
+  const geo = new THREE.PlaneGeometry(w, d, 4, 4);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x8899aa, roughness: 0.05, metalness: 0.3,
+    transparent: true, opacity: 0.6,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  const y = terrainHeight(x, z) + 0.03;
+  mesh.position.set(x, y, z);
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  // Wet sheen particles
+  for (let i = 0; i < 12; i++) {
+    const sg = new THREE.PlaneGeometry(0.15, 0.15);
+    const sm = new THREE.MeshBasicMaterial({ color: 0xccddff, transparent: true, opacity: 0.5 });
+    const s = new THREE.Mesh(sg, sm);
+    s.rotation.x = -Math.PI / 2;
+    s.position.set(x + (Math.random()-0.5)*w, y+0.01, z + (Math.random()-0.5)*d);
+    scene.add(s);
+  }
+}
+makeSlipperyPatch(8, 5, 6, 4);
+makeSlipperyPatch(-12, 18, 5, 6);
+
+// ─── WARNING SIGNS ───────────────────────────────────────────────────────────
+function makeSign(x, z, lines, faceAngle) {
+  const y = terrainHeight(x, z);
+  const g = new THREE.Group();
+
+  // Post
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045, 0.055, 1.5, 7),
+    new THREE.MeshLambertMaterial({ color: 0x6b3a1f })
+  );
+  post.position.y = 0.75;
+  post.castShadow = true;
+  g.add(post);
+
+  // Board
+  const boardW = lines.reduce((m,l) => Math.max(m, l.length), 0) * 0.095 + 0.25;
+  const boardH = lines.length * 0.28 + 0.18;
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(boardW, boardH, 0.06),
+    new THREE.MeshLambertMaterial({ color: 0xc8a05a })
+  );
+  board.position.y = 1.5 + boardH / 2 + 0.05;
+  board.castShadow = true;
+  g.add(board);
+
+  // Wood grain lines on board
+  for (let i = 0; i < 3; i++) {
+    const grain = new THREE.Mesh(
+      new THREE.BoxGeometry(boardW - 0.04, 0.012, 0.065),
+      new THREE.MeshLambertMaterial({ color: 0xb08840 })
+    );
+    grain.position.set(0, board.position.y + (i - 1) * (boardH / 3.5), 0);
+    g.add(grain);
+  }
+
+  // Text via canvas texture
+  const canvas = document.createElement('canvas');
+  canvas.width = 512; canvas.height = lines.length * 96 + 32;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#c8a05a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#3a1a00';
+  ctx.textAlign = 'center';
+  lines.forEach((line, i) => {
+    const isHeader = i === 0;
+    ctx.font = isHeader
+      ? 'bold 64px Arial Black, sans-serif'
+      : 'bold 52px Arial, sans-serif';
+    ctx.fillText(line, canvas.width / 2, 72 + i * 96);
+  });
+  const tex = new THREE.CanvasTexture(canvas);
+  const label = new THREE.Mesh(
+    new THREE.PlaneGeometry(boardW - 0.06, boardH - 0.06),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true })
+  );
+  label.position.set(0, board.position.y, 0.035);
+  g.add(label);
+
+  g.position.set(x, y, z);
+  g.rotation.y = faceAngle;
+  scene.add(g);
+}
+
+// Signs near slippery patches
+makeSign(9.5, 3.2,  ['⚠ DANGER', 'SLIPPERY', 'SURFACE'], Math.PI * 0.15);
+makeSign(-10.5, 16, ['⚠ DANGER', 'SLIPPERY', 'SURFACE'], -Math.PI * 0.2);
+
+// Signs near lake shore (face outward from lake center)
+const lakeSignAngle1 = Math.atan2(0 - LAKE_CENTER.y, 5 - LAKE_CENTER.x);
+const lakeSignAngle2 = Math.atan2(-5 - LAKE_CENTER.y, -10 - LAKE_CENTER.x);
+makeSign(-8,  4,  ['🚫 NO', 'SWIMMING', 'DEEP WATER'], lakeSignAngle1);
+makeSign(-26, 16, ['🚫 NO', 'SWIMMING', 'DEEP WATER'], lakeSignAngle2);
+
+// (grass removed)
+
+// ─── TREES ────────────────────────────────────────────────────────────────────
+function makeTree(x, z) {
+  const zone = getZone(x, z);
+  if (zone === 'water') return;
+  const y = terrainHeight(x, z);
+  const g = new THREE.Group();
+
+  const trunkH = 1.2 + Math.random() * 0.8;
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.18, trunkH, 7),
+    new THREE.MeshLambertMaterial({ color: 0x5c3d1e })
+  );
+  trunk.position.y = trunkH / 2;
+  trunk.castShadow = true;
+  g.add(trunk);
+
+  const layers = 2 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < layers; i++) {
+    const r  = 0.9 - i * 0.15 + Math.random() * 0.2;
+    const h  = 1.0 - i * 0.15;
+    const yp = trunkH + i * 0.5;
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(r, h, 8),
+      new THREE.MeshLambertMaterial({
+        color: new THREE.Color(0.12 + Math.random()*0.06, 0.5 + Math.random()*0.12, 0.1 + Math.random()*0.08)
+      })
+    );
+    cone.position.y = yp;
+    cone.castShadow = true;
+    g.add(cone);
+  }
+  g.position.set(x, y, z);
+  scene.add(g);
+}
+const cullables = [];
+const treeColliders = []; // {x, z, r} cylinder colliders
+
+for (let i = 0; i < 55; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const r = 12 + Math.random() * 42;
+  const tx = Math.cos(a) * r, tz = Math.sin(a) * r;
+  if (getZone(tx, tz) !== 'water') {
+    makeTree(tx, tz);
+    treeColliders.push({ x: tx, z: tz, r: 0.32 });
+  }
+}
+scene.children.forEach(obj => {
+  if(obj.isGroup) cullables.push(obj);
+});
+
+// ─── GOLD CART ───────────────────────────────────────────────────────────────
+const CART_START = { x: 6, z: -6 };
+const cartGroup  = new THREE.Group();
+
+const goldMat   = new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.85, roughness: 0.15 });
+const darkMat   = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.4,  roughness: 0.6  });
+const chromeMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 0.95, roughness: 0.05 });
+const seatMat   = new THREE.MeshStandardMaterial({ color: 0x8B1a1a, roughness: 0.8 });
+const windMat   = new THREE.MeshPhysicalMaterial({ color: 0x88bbff, transparent: true, opacity: 0.35, roughness: 0.0, metalness: 0.1 });
+
+// Body
+const body = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.38, 2.8), goldMat);
+body.position.y = 0.55; body.castShadow = true; cartGroup.add(body);
+
+// Front hood (angled)
+const hoodGeo = new THREE.BoxGeometry(1.6, 0.22, 0.8);
+const hood = new THREE.Mesh(hoodGeo, goldMat);
+hood.position.set(0, 0.72, -1.1); hood.rotation.x = 0.22;
+hood.castShadow = true; cartGroup.add(hood);
+
+// Windshield
+const shield = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.55, 0.06), windMat);
+shield.position.set(0, 1.0, -0.55); shield.rotation.x = -0.3;
+cartGroup.add(shield);
+
+// Roof
+const roof = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 1.4), goldMat);
+roof.position.set(0, 1.32, 0.22); roof.castShadow = true; cartGroup.add(roof);
+
+// Roof supports
+[[-0.7, -0.38], [0.7, -0.38], [-0.7, 0.82], [0.7, 0.82]].forEach(([px, pz]) => {
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.82, 6), chromeMat);
+  pillar.position.set(px, 0.97, pz); cartGroup.add(pillar);
+});
+
+// Seats
+[[0, 0.82, 0.28], [0, 0.82, 0.82]].forEach(([x, y, z]) => {
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.14, 0.55), seatMat);
+  seat.position.set(x, y, z); cartGroup.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 0.1), seatMat);
+  back.position.set(x, y+0.3, z-0.22); cartGroup.add(back);
+});
+
+// Steering wheel
+const swRing = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.025, 8, 20), chromeMat);
+swRing.position.set(0, 1.0, -0.3); swRing.rotation.x = -0.7; cartGroup.add(swRing);
+const swPost = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.28, 6), darkMat);
+swPost.position.set(0, 0.88, -0.28); swPost.rotation.x = 0.7; cartGroup.add(swPost);
+
+// Chassis rails
+[-0.7, 0.7].forEach(px => {
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 2.9), goldMat);
+  rail.position.set(px, 0.28, 0); cartGroup.add(rail);
+});
+
+// Front bumper
+const bump = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.16, 0.12), chromeMat);
+bump.position.set(0, 0.42, -1.52); cartGroup.add(bump);
+
+// Headlights
+[-0.55, 0.55].forEach(px => {
+  const hl = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.06, 12), new THREE.MeshStandardMaterial({ color: 0xffffee, emissive: 0xffffaa, emissiveIntensity: 1.2 }));
+  hl.rotation.x = Math.PI/2; hl.position.set(px, 0.55, -1.52);
+  cartGroup.add(hl);
+  const hlight = new THREE.PointLight(0xfff8cc, 1.2, 6);
+  hlight.position.set(px, 0.55, -1.8); cartGroup.add(hlight);
+});
+
+// Wheels (4)
+const wheelGeo  = new THREE.CylinderGeometry(0.32, 0.32, 0.22, 16);
+const hubGeo    = new THREE.CylinderGeometry(0.10, 0.10, 0.24, 8);
+const spokeGeo  = new THREE.BoxGeometry(0.05, 0.04, 0.52);
+const cartWheels = [];
+[[-0.92, 0.32, -0.98], [0.92, 0.32, -0.98],
+ [-0.92, 0.32,  0.98], [0.92, 0.32,  0.98]].forEach(([px, py, pz]) => {
+  const wg = new THREE.Group();
+  const tire = new THREE.Mesh(wheelGeo, darkMat);
+  tire.rotation.z = Math.PI/2; tire.castShadow = true; wg.add(tire);
+  const hub = new THREE.Mesh(hubGeo, chromeMat);
+  hub.rotation.z = Math.PI/2; wg.add(hub);
+  for (let s=0; s<4; s++) {
+    const sp = new THREE.Mesh(spokeGeo, chromeMat);
+    sp.rotation.z = Math.PI/2; sp.rotation.y = s * Math.PI/2;
+    wg.add(sp);
+  }
+  wg.position.set(px, py, pz);
+  cartGroup.add(wg);
+  cartWheels.push(wg);
+});
+
+const cartInitY = terrainHeight(CART_START.x, CART_START.z) + 0.32;
+cartGroup.position.set(CART_START.x, cartInitY, CART_START.z);
+cartGroup.castShadow = true;
+scene.add(cartGroup);
+
+// Cart glow
+const cartGlow = new THREE.PointLight(0xffd700, 0.6, 4);
+cartGlow.position.set(CART_START.x, cartInitY + 1, CART_START.z);
+scene.add(cartGlow);
+
+// Cart state
+const cart = {
+  pos:     new THREE.Vector3(CART_START.x, cartInitY, CART_START.z),
+  angle:   0, speed:  0,
+  facingQ: new THREE.Quaternion(),
+  targetQ: new THREE.Quaternion(),
+  driving: false,
+};
+
+// Enter/exit hint
+const enterHintEl = document.createElement('div');
+enterHintEl.style.cssText = 'position:fixed;bottom:140px;left:50%;transform:translateX(-50%);'+
+  'background:rgba(0,0,0,0.5);backdrop-filter:blur(8px);border-radius:20px;padding:6px 18px;'+
+  'font-family:Segoe UI,sans-serif;font-size:13px;color:#fff;z-index:10;pointer-events:none;opacity:0;transition:opacity 0.3s;';
+enterHintEl.textContent = '🛺 Press E to drive';
+document.body.appendChild(enterHintEl);
+
+window.addEventListener('keydown', e => {
+  if(e.code === 'KeyE') {
+    if(!cart.driving) {
+      // Enter cart if close enough
+      const d = cartGroup.position.distanceTo(char.pos);
+      if(d < 2.5) {
+        cart.driving = true;
+        if(model) model.visible = false;
+        fadeToAction('Idle');
+        showStatus('🛺 Driving! Arrow keys to steer · E to exit');
+      }
+    } else {
+      // Exit
+      cart.driving = false;
+      if(model) {
+        model.visible = true;
+        // Place char beside cart
+        char.pos.set(
+          cart.pos.x + Math.sin(cart.angle + Math.PI/2) * 1.8,
+          terrainHeight(cart.pos.x, cart.pos.z),
+          cart.pos.z + Math.cos(cart.angle + Math.PI/2) * 1.8
+        );
+      }
+      cart.speed = 0;
+    }
+  }
+});
+
+// ─── COINS ────────────────────────────────────────────────────────────────────
+const coinGeo  = new THREE.CylinderGeometry(0.22, 0.22, 0.06, 16);
+const coinMat  = new THREE.MeshStandardMaterial({ color: 0xffd700, metalness: 0.9, roughness: 0.1, emissive: 0xffaa00, emissiveIntensity: 1.2 });
+const coins    = [];
+const COIN_POSITIONS = [];
+for (let i = 0; i < 28; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const r = 4 + Math.random() * 36;
+  const x = Math.cos(a) * r, z = Math.sin(a) * r;
+  if (getZone(x, z) === 'water') continue;
+  COIN_POSITIONS.push({ x, z });
+}
+// Also place a few on the hill and stairs area
+[[22,8],[5,12],[-5,20],[15,-8],[8,22],[-18,5],[25,15]].forEach(([x,z]) => {
+  if (getZone(x,z) !== 'water') COIN_POSITIONS.push({x,z});
+});
+
+COIN_POSITIONS.forEach(({x, z}) => {
+  const y = terrainHeight(x, z) + 0.5;
+  const mesh = new THREE.Mesh(coinGeo, coinMat.clone());
+  mesh.position.set(x, y, z);
+  mesh.rotation.x = Math.PI / 2;
+  mesh.castShadow = false; // coins are tiny, no need for shadow cost
+  scene.add(mesh);
+  coins.push({ mesh, collected: false, baseY: y });
+});
+
+// ─── RUINS STAIRCASE ─────────────────────────────────────────────────────────
+const STAIR_X = 14, STAIR_Z = -10;
+const stairSteps = [];
+const stoneTexMat = new THREE.MeshLambertMaterial({ color: 0x8a7a6a });
+for (let i = 0; i < 5; i++) {
+  const w = 3.2, d = 0.7, h = 0.32;
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const mesh = new THREE.Mesh(geo, stoneTexMat);
+  const bx = STAIR_X + i * 0.15;
+  const bz = STAIR_Z + i * d;
+  const by = terrainHeight(bx, bz) + h / 2 + i * h;
+  mesh.position.set(bx, by, bz);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  scene.add(mesh);
+  stairSteps.push({ mesh, topY: by + h / 2, minX: bx - w/2, maxX: bx + w/2, minZ: bz - d/2, maxZ: bz + d/2 });
+  // Mossy/crumbled bits
+  if (Math.random() > 0.4) {
+    const chip = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2+Math.random()*0.3, 0.12, 0.2+Math.random()*0.2),
+      new THREE.MeshLambertMaterial({ color: 0x6e5e4e })
+    );
+    chip.position.set(bx + (Math.random()-0.5)*w*0.8, by + h/2 + 0.06, bz + (Math.random()-0.5)*d*0.8);
+    chip.rotation.y = Math.random() * Math.PI;
+    scene.add(chip);
+  }
+}
+// Ruined wall fragments
+[[0,0],[3.5,0],[-3.5,0]].forEach(([ox,oz]) => {
+  const wh = 1.0 + Math.random() * 1.2;
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(0.35, wh, 0.35),
+    new THREE.MeshLambertMaterial({ color: 0x7a6a5a })
+  );
+  const wx = STAIR_X + ox, wz = STAIR_Z - 0.5 + oz;
+  wall.position.set(wx, terrainHeight(wx, wz) + wh/2, wz);
+  wall.castShadow = true;
+  scene.add(wall);
+});
+
+// ─── ESCALATORS (3 full-size) ─────────────────────────────────────────────────
+const ESC_STEPS = 12, ESC_STEP_H = 0.32, ESC_STEP_D = 0.75;
+const ESC_TOTAL_H = ESC_STEPS * ESC_STEP_H;
+const ESC_TOTAL_D = ESC_STEPS * ESC_STEP_D;
+const ESC_WIDTH = 2.8;
+
+const escalators = []; // each: { steps[], baseX, baseZ, baseY, angle }
+
+const ESC_CONFIGS = [
+  { x: -10, z: -14, angle: 0   },
+  { x:  20, z:  18, angle: Math.PI * 0.6 },
+  { x: -22, z: -20, angle: Math.PI * 1.3 },
+];
+
+const escStepMat  = new THREE.MeshStandardMaterial({ color: 0x7799aa, metalness: 0.75, roughness: 0.25 });
+const escBaseMat  = new THREE.MeshStandardMaterial({ color: 0x334455, metalness: 0.85, roughness: 0.2 });
+const escRailMat  = new THREE.MeshStandardMaterial({ color: 0xbbccdd, metalness: 0.9,  roughness: 0.08 });
+const escArrowMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+
+ESC_CONFIGS.forEach(cfg => {
+  const bY = terrainHeight(cfg.x, cfg.z);
+  const esc = { steps: [], baseX: cfg.x, baseZ: cfg.z, baseY: bY, angle: cfg.angle };
+
+  // Ramp base plate
+  const ramp = new THREE.Mesh(
+    new THREE.BoxGeometry(ESC_WIDTH + 0.4, 0.18, ESC_TOTAL_D + 0.6),
+    escBaseMat
+  );
+  ramp.position.set(cfg.x, bY + 0.09, cfg.z + ESC_TOTAL_D / 2);
+  ramp.castShadow = true;
+  scene.add(ramp);
+
+  // Steps
+  for (let i = 0; i < ESC_STEPS; i++) {
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(ESC_WIDTH, ESC_STEP_H, ESC_STEP_D - 0.06),
+      escStepMat
+    );
+    // Arrow stripe on step
+    const arrow = new THREE.Mesh(
+      new THREE.BoxGeometry(ESC_WIDTH * 0.6, ESC_STEP_H + 0.01, 0.08),
+      escArrowMat
+    );
+    arrow.position.set(0, 0, -0.1);
+    mesh.add(arrow);
+
+    const bz = cfg.z + i * ESC_STEP_D;
+    const by = bY + 0.18 + i * ESC_STEP_H + ESC_STEP_H / 2;
+    mesh.position.set(cfg.x, by, bz);
+    mesh.castShadow = true;
+    scene.add(mesh);
+
+    esc.steps.push({
+      mesh,
+      baseZ: bz, baseY: by,
+      topSurface: by + ESC_STEP_H / 2,
+      minX: cfg.x - ESC_WIDTH / 2, maxX: cfg.x + ESC_WIDTH / 2,
+      minZ: bz - ESC_STEP_D / 2,   maxZ: bz + ESC_STEP_D / 2,
+      index: i,
+    });
+  }
+
+  // Handrails
+  [-(ESC_WIDTH/2 + 0.1), (ESC_WIDTH/2 + 0.1)].forEach(ox => {
+    // Slanted rail bar
+    const railLen = Math.sqrt(ESC_TOTAL_D * ESC_TOTAL_D + ESC_TOTAL_H * ESC_TOTAL_H);
+    const railAngle = Math.atan2(ESC_TOTAL_H, ESC_TOTAL_D);
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, railLen), escRailMat);
+    rail.position.set(cfg.x + ox, bY + ESC_TOTAL_H / 2 + 0.8, cfg.z + ESC_TOTAL_D / 2);
+    rail.rotation.x = -railAngle;
+    scene.add(rail);
+    // Vertical posts
+    [0, ESC_TOTAL_D].forEach(dz => {
+      const postH = bY + (dz === 0 ? 0.8 : ESC_TOTAL_H + 0.8);
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.045, 0.045, postH - bY, 6),
+        escRailMat
+      );
+      post.position.set(cfg.x + ox, bY + (postH - bY) / 2, cfg.z + dz);
+      scene.add(post);
+    });
+  });
+
+  // "UP ↑" sign at base
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#1a2233'; ctx.fillRect(0,0,256,128);
+  ctx.fillStyle = '#00ffcc'; ctx.font = 'bold 72px Arial';
+  ctx.textAlign = 'center'; ctx.fillText('▲ UP', 128, 90);
+  const tex = new THREE.CanvasTexture(canvas);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.2, 0.6),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true })
+  );
+  sign.position.set(cfg.x, bY + 1.5, cfg.z - 0.5);
+  scene.add(sign);
+
+  escalators.push(esc);
+});
+
+// ─── ORBIT CONTROLS ──────────────────────────────────────────────────────────
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.enablePan = false; orbit.enableDamping = true; orbit.dampingFactor = 0.08;
+orbit.minPolarAngle = 0.10; orbit.maxPolarAngle = Math.PI/2 - 0.04;
+orbit.minDistance = 3; orbit.maxDistance = 22;
+orbit.target.set(0, 1, 0); orbit.update();
+
+// ─── KEYBOARD ────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault?.(); });
+window.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+// ─── CHARACTER STATE ─────────────────────────────────────────────────────────
+const char = {
+  pos:       new THREE.Vector3(0, 0, 0),
+  yVel:      0, onGround: true,
+  angle:     0,
+  facingQ:   new THREE.Quaternion(),
+  targetQ:   new THREE.Quaternion(),
+  jumpDirX:  0, jumpDirZ: 0, bobTime: 0,
+  slipVelX:  0, slipVelZ: 0,
+  isSlipping: false, slipTimer: 0,
+  isDead:    false, deathTimer: 0,
+  isDrowning: false,
+  isOnEscalator: false, escStepIndex: -1,
+  onStair:   false, stairY: 0,
+};
+let activeMode    = 'Walk';
+let coinCount     = 0;
+const coinEl      = document.getElementById('coin-count');
+const zoneLabelEl = document.getElementById('zone-label');
+const statusEl    = document.getElementById('status-pill');
+const ZONE_LABELS = { grass:'🌿 Meadow', water:'💧 Lake', slippery:'🧊 Slippery!', hill:'⛰️ Hills' };
+
+function showStatus(msg, dur=2000) {
+  statusEl.textContent = msg;
+  statusEl.style.opacity = '1';
+  clearTimeout(statusEl._t);
+  statusEl._t = setTimeout(() => statusEl.style.opacity='0', dur);
+}
+
+// ─── ANIMATION ───────────────────────────────────────────────────────────────
+let model=null, mixer=null;
+const actions={};
+let activeAction=null;
+let activeBtn = document.querySelector('.btn.active');
+
+const LOOPS={
+  Idle:THREE.LoopRepeat, Walking:THREE.LoopRepeat,
+  Running:THREE.LoopRepeat, Dance:THREE.LoopRepeat,
+  Jump:THREE.LoopOnce, Death:THREE.LoopOnce,
+};
+
+function fadeToAction(name, dur=0.35) {
+  if (name==='Idle' && !actions['Idle']) {
+    if (activeAction===null) return;
+    activeAction.fadeOut(dur); activeAction=null; return;
+  }
+  const next=actions[name]; if(!next) return;
+  if(next===activeAction) return;
+  if(activeAction) activeAction.fadeOut(dur);
+  next.reset().setLoop(LOOPS[name]??THREE.LoopRepeat, Infinity)
+      .setEffectiveWeight(1).fadeIn(dur).play();
+  next.clampWhenFinished=(name==='Jump'||name==='Death');
+  activeAction=next;
+}
+
+document.querySelectorAll('.btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const action=btn.dataset.action;
+    if(!actions[action]) return;
+    if(char.isDrowning||char.isDead) return;
+    if(activeBtn) activeBtn.classList.remove('active');
+    btn.classList.add('active'); activeBtn=btn;
+
+    if(action==='Walking')      { activeMode='Walk'; }
+    else if(action==='Running') { activeMode='Run'; }
+    else if(action==='Dance')   { activeMode='Dance'; fadeToAction('Dance'); }
+    else if(action==='Jump') {
+      activeMode='Jump';
+      const upK=keys['ArrowUp'], downK=keys['ArrowDown'];
+      const leftK=keys['ArrowLeft'], rightK=keys['ArrowRight'];
+      const any=upK||downK||leftK||rightK;
+      if(any) {
+        const camDir=camera.position.clone().sub(orbit.target);
+        const az=Math.atan2(camDir.x, camDir.z);
+        let mx=0,mz=0;
+        if(upK)    {mx-=Math.sin(az);mz-=Math.cos(az);}
+        if(downK)  {mx+=Math.sin(az);mz+=Math.cos(az);}
+        if(leftK)  {mx-=Math.cos(az);mz+=Math.sin(az);}
+        if(rightK) {mx+=Math.cos(az);mz-=Math.sin(az);}
+        const l=Math.sqrt(mx*mx+mz*mz);
+        if(l>0.001){mx/=l;mz/=l;char.jumpDirX=mx;char.jumpDirZ=mz;
+          char.angle=Math.atan2(mx,mz);
+          char.targetQ.setFromAxisAngle(_up, char.angle);
+          char.facingQ.copy(char.targetQ);
+          if(model) model.quaternion.copy(char.facingQ);
+        }
+      } else {
+        char.jumpDirX=Math.sin(char.angle); char.jumpDirZ=Math.cos(char.angle);
+      }
+      char.onGround=false; char.yVel=5.2;
+      fadeToAction('Jump');
+    }
+  });
+});
+
+// ─── LOAD CHARACTER ──────────────────────────────────────────────────────────
+new GLTFLoader().load(
+  'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb',
+  (gltf) => {
+    document.getElementById('loading').style.opacity='0';
+    setTimeout(()=>document.getElementById('loading').style.display='none', 800);
+
+    model=gltf.scene; model.scale.setScalar(0.6);
+    model.traverse(c=>{
+      if(c.isMesh){
+        c.castShadow=true; c.receiveShadow=true;
+        // RobotExpressive yellow comes from a texture, not m.color
+        // Strategy: if a mesh has a texture map, it's a body part → recolor red
+        const mats=Array.isArray(c.material)?c.material:[c.material];
+        mats.forEach(m=>{
+          if(!m) return;
+          const hsl={h:0,s:0,l:0};
+          m.color.getHSL(hsl);
+          if(hsl.l < 0.15) return; // keep black joints/eyes as-is
+          // Strip ALL texture maps so nothing bleeds through
+          m.map = null;
+          m.normalMap = null;
+          m.roughnessMap = null;
+          m.metalnessMap = null;
+          m.emissiveMap = null;
+          m.color.set(0xcc1500);
+          m.roughness = 0.55;
+          m.metalness = 0.1;
+          if(m.emissive) m.emissive.set(0x000000);
+          m.needsUpdate = true;
+        });
+      }
+    });
+    scene.add(model);
+
+    mixer=new THREE.AnimationMixer(model);
+    gltf.animations.forEach(clip=>{actions[clip.name]=mixer.clipAction(clip);});
+    console.log('Animations:', Object.keys(actions));
+
+    // Start at terrain height
+    char.pos.y = terrainHeight(0, 0);
+    fadeToAction('Idle');
+
+    mixer.addEventListener('finished', e=>{
+      if(e.action===actions['Jump']) {
+        if(char.isDead) return;
+        activeMode='Walk';
+        if(activeBtn) activeBtn.classList.remove('active');
+        activeBtn=document.querySelector('[data-action="Walking"]');
+        if(activeBtn) activeBtn.classList.add('active');
+        fadeToAction('Idle');
+      }
+      // Death/drown animation finish handled by deathTimer respawn
+    });
+  },
+  undefined,
+  err=>{console.error(err);document.getElementById('loading').textContent='⚠ Load failed';}
+);
+
+// ─── UPDATE ──────────────────────────────────────────────────────────────────
+const _up=new THREE.Vector3(0,1,0);
+const clock=new THREE.Clock();
+const _tmp=new THREE.Vector3();
+
+function update(dt) {
+  if(!model) return;
+  const BOUND=55;
+  waterTime+=dt;
+
+  // ── Distance culling (every 10 frames) ───────────────────────────────────
+  if(Math.round(waterTime*60) % 10 === 0) {
+    const camPos = camera.position;
+    cullables.forEach(obj => {
+      const dx = obj.position.x - camPos.x;
+      const dz = obj.position.z - camPos.z;
+      obj.visible = (dx*dx + dz*dz) < 2500; // 50 unit radius
+    });
+  }
+
+  // ── Animate water ────────────────────────────────────────────────────────
+  water.material.color.setHSL(0.57 + Math.sin(waterTime*0.3)*0.02, 0.7, 0.35+Math.sin(waterTime*0.5)*0.03);
+  water.position.y = LAKE_DEPTH + 0.05 + Math.sin(waterTime*0.8)*0.04;
+
+  // ── Gold cart ────────────────────────────────────────────────────────────
+  if(cart.driving) {
+    const fwd  = keys['ArrowUp'];
+    const bwd  = keys['ArrowDown'];
+    const lt   = keys['ArrowLeft'];
+    const rt   = keys['ArrowRight'];
+
+    // Acceleration / braking
+    const ACCEL = 8.0, DECEL = 6.0, MAX_SPD = 14.0, TURN = 1.8;
+    if(fwd)      cart.speed = Math.min(cart.speed + ACCEL*dt, MAX_SPD);
+    else if(bwd) cart.speed = Math.max(cart.speed - ACCEL*dt, -MAX_SPD*0.5);
+    else         cart.speed *= Math.pow(0.88, dt*60); // coast to stop
+
+    // Steering (only turns if moving)
+    if(Math.abs(cart.speed) > 0.1) {
+      const steerDir = cart.speed > 0 ? 1 : -1;
+      if(lt) cart.angle += TURN * dt * steerDir;
+      if(rt) cart.angle -= TURN * dt * steerDir;
+    }
+
+    // Move
+    cart.pos.x -= Math.sin(cart.angle) * cart.speed * dt;
+    cart.pos.z -= Math.cos(cart.angle) * cart.speed * dt;
+    cart.pos.x  = Math.max(-BOUND, Math.min(BOUND, cart.pos.x));
+    cart.pos.z  = Math.max(-BOUND, Math.min(BOUND, cart.pos.z));
+
+    // Spin wheels proportional to speed
+    const wheelSpin = cart.speed * dt * 2.5;
+    cartWheels.forEach(w => w.children[0].rotation.x += wheelSpin);
+
+    // Slippery zone — loose grip
+    const cZone = getZone(cart.pos.x, cart.pos.z);
+    if(cZone === 'water') {
+      cart.driving = false;
+      cart.speed = 0;
+      if(model) model.visible = true;
+      char.pos.set(cart.pos.x, terrainHeight(cart.pos.x, cart.pos.z), cart.pos.z);
+      showStatus('💧 Cart sank! Respawning…', 3000);
+    }
+  }
+
+  // Keep cart on terrain
+  const cartGroundY = terrainHeight(cart.pos.x, cart.pos.z) + 0.32;
+  cart.pos.y += (cartGroundY - cart.pos.y) * 0.25; // smooth settle
+  cartGroup.position.copy(cart.pos);
+  cart.targetQ.setFromAxisAngle(_up, cart.angle);
+  cart.facingQ.slerp(cart.targetQ, Math.min(dt*8, 1));
+  cartGroup.quaternion.copy(cart.facingQ);
+  cartGlow.position.set(cart.pos.x, cart.pos.y+1, cart.pos.z);
+
+  // If driving, camera + orbit follow cart
+  if(cart.driving) {
+    orbit.target.lerp(_tmp.set(cart.pos.x, cart.pos.y+1.2, cart.pos.z), 0.1);
+    orbit.update();
+  }
+
+  // Proximity hint
+  const cartDist = cartGroup.position.distanceTo(char.pos);
+  enterHintEl.style.opacity = (!cart.driving && cartDist < 2.5) ? '1' : '0';
+
+  // ── Animate coins ────────────────────────────────────────────────────────
+  coins.forEach(c=>{
+    if(c.collected) return;
+    c.mesh.rotation.z += dt*2.2;
+    c.mesh.position.y = c.baseY + Math.sin(waterTime*2+c.mesh.position.x)*0.12;
+    // Collect check
+    const d=c.mesh.position.distanceTo(char.pos);
+    if(d<0.9) {
+      c.collected=true;
+      c.mesh.visible=false;
+      coinCount++; coinEl.textContent=coinCount;
+      showStatus('🪙 Coin collected! '+coinCount+' total');
+    }
+  });
+
+  // ── Drowning ─────────────────────────────────────────────────────────────
+  const zone=getZone(char.pos.x, char.pos.z);
+  zoneLabelEl.textContent=ZONE_LABELS[zone]||'🌿 Meadow';
+
+  if(zone==='water' && !char.isDrowning && !char.isDead) {
+    char.isDrowning=true;
+    char.isDead=true;
+    char.deathTimer=0;
+    showStatus('💧 Drowned! Respawning…', 3000);
+    fadeToAction('Death');
+  }
+
+  // ── Respawn after death ───────────────────────────────────────────────────
+  if(char.isDead) {
+    char.deathTimer+=dt;
+    if(char.deathTimer>3.0) {
+      char.isDead=false; char.isDrowning=false;
+      char.isSlipping=false; char.slipTimer=0;
+      char.pos.set(0, terrainHeight(0,0), 0);
+      char.yVel=0; char.onGround=true;
+      activeMode='Walk';
+      fadeToAction('Idle');
+    }
+    // Still update physics while sinking
+    char.yVel-=4.0*dt;
+    char.pos.y+=char.yVel*dt;
+    model.position.copy(char.pos);
+    if(mixer) mixer.update(dt);
+    return;
+  }
+
+  // ── Slippery zone ────────────────────────────────────────────────────────
+  if(zone==='slippery' && !char.isSlipping) {
+    char.isSlipping=true;
+    char.slipTimer=0;
+    // Keep momentum direction but massively amplify it
+    const sDir = char.angle + (Math.random()-0.5)*0.8;
+    char.slipVelX = Math.sin(sDir) * 8.0;
+    char.slipVelZ = Math.cos(sDir) * 8.0;
+    showStatus('🧊 Slippery! Watch out!');
+    fadeToAction('Death');
+  }
+  if(char.isSlipping) {
+    char.slipTimer += dt;
+    // Very slow friction — feels like ice
+    const friction = Math.pow(0.96, dt * 60);
+    char.slipVelX *= friction;
+    char.slipVelZ *= friction;
+    char.pos.x += char.slipVelX * dt;
+    char.pos.z += char.slipVelZ * dt;
+    if(char.slipTimer > 3.5) {
+      char.isSlipping = false;
+      fadeToAction('Idle');
+    }
+  }
+
+  const isDancing=activeMode==='Dance';
+  const isJumping=activeMode==='Jump';
+
+  // ── Escalator ride (3 escalators) ───────────────────────────────────────
+  char.isOnEscalator = false;
+  for(const esc of escalators) {
+    for(const s of esc.steps) {
+      if(char.pos.x > s.minX && char.pos.x < s.maxX &&
+         char.pos.z > s.minZ && char.pos.z < s.maxZ) {
+        char.isOnEscalator = true;
+        char.escStepIndex  = s.index;
+        char._curEsc       = esc;
+        break;
+      }
+    }
+    if(char.isOnEscalator) break;
+  }
+  if(char.isOnEscalator && char.onGround && char._curEsc) {
+    const esc = char._curEsc;
+    char.pos.z -= 1.5 * dt;  // carried upward along z
+    const s = esc.steps[char.escStepIndex];
+    char.pos.y = s.topSurface;
+    if(char.pos.z < esc.baseZ - 0.5) {
+      // Walk back off the bottom
+      char.isOnEscalator = false;
+      char.yVel = 0; char.onGround = true;
+    }
+    if(char.pos.z > esc.baseZ + ESC_TOTAL_D + 0.3) {
+      // Launched off the top
+      char.yVel = 1.5; char.onGround = false;
+      showStatus('📉 Whoa! Off the top!');
+    }
+  }
+
+  // ── Stair climbing + side blocking ───────────────────────────────────────
+  char.onStair = false;
+  for(const s of stairSteps) {
+    const inX = char.pos.x > s.minX && char.pos.x < s.maxX;
+    const inZ = char.pos.z > s.minZ && char.pos.z < s.maxZ;
+    if(inX && inZ) {
+      if(char.pos.y >= s.topY - 0.38) {
+        // On top of this step — lift character
+        char.onStair = true;
+        char.stairY  = s.topY;
+      } else {
+        // Hit the side — push back out (block)
+        const cx = (s.minX + s.maxX) / 2, cz = (s.minZ + s.maxZ) / 2;
+        const dx = char.pos.x - cx, dz = char.pos.z - cz;
+        const hw = (s.maxX - s.minX) / 2 + 0.3;
+        const hd = (s.maxZ - s.minZ) / 2 + 0.3;
+        if(Math.abs(dx / hw) > Math.abs(dz / hd)) {
+          char.pos.x = cx + Math.sign(dx) * hw;
+        } else {
+          char.pos.z = cz + Math.sign(dz) * hd;
+        }
+      }
+      break;
+    }
+  }
+
+  // ── Jump carry ───────────────────────────────────────────────────────────
+  if(isJumping) {
+    char.pos.x+=char.jumpDirX*2.8*dt;
+    char.pos.z+=char.jumpDirZ*2.8*dt;
+    char.pos.x=Math.max(-BOUND, Math.min(BOUND, char.pos.x));
+    char.pos.z=Math.max(-BOUND, Math.min(BOUND, char.pos.z));
+  }
+
+  // ── Arrow key movement ───────────────────────────────────────────────────
+  if(!isDancing && !isJumping && !char.isSlipping && !cart.driving) {
+    const up=keys['ArrowUp'], dn=keys['ArrowDown'];
+    const lt=keys['ArrowLeft'], rt=keys['ArrowRight'];
+    const any=up||dn||lt||rt;
+
+    if(any) {
+      const camDir=camera.position.clone().sub(orbit.target);
+      const az=Math.atan2(camDir.x, camDir.z);
+      let mx=0, mz=0;
+      if(up)  {mx-=Math.sin(az); mz-=Math.cos(az);}
+      if(dn)  {mx+=Math.sin(az); mz+=Math.cos(az);}
+      if(lt)  {mx-=Math.cos(az); mz+=Math.sin(az);}
+      if(rt)  {mx+=Math.cos(az); mz-=Math.sin(az);}
+      const l=Math.sqrt(mx*mx+mz*mz);
+      if(l>0.001) {
+        mx/=l; mz/=l;
+        const spd=activeMode==='Run'?9.0:3.5;
+        char.bobTime+=dt*(activeMode==='Run'?14.0:9.0);
+        char.pos.x+=mx*spd*dt;
+        char.pos.z+=mz*spd*dt;
+        char.pos.x=Math.max(-BOUND,Math.min(BOUND,char.pos.x));
+        char.pos.z=Math.max(-BOUND,Math.min(BOUND,char.pos.z));
+        char.angle=Math.atan2(mx,mz);
+        const want=activeMode==='Run'?'Running':(actions['Walking']?'Walking':'Running');
+        if(activeAction!==actions[want]) fadeToAction(want);
+      }
+    } else {
+      const idle=actions['Idle']??null;
+      if(activeAction!==idle) fadeToAction('Idle');
+    }
+  }
+
+  // ── Tree collision (cylinder push-out) ───────────────────────────────────
+  for(const t of treeColliders) {
+    const dx = char.pos.x - t.x, dz = char.pos.z - t.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    if(dist < t.r && dist > 0.001) {
+      const push = t.r / dist;
+      char.pos.x = t.x + dx * push;
+      char.pos.z = t.z + dz * push;
+    }
+  }
+
+  // ── Gravity + ground follow ───────────────────────────────────────────────
+  let groundY = terrainHeight(char.pos.x, char.pos.z);
+  if(char.onStair) groundY=Math.max(groundY, char.stairY);
+
+  if(!char.onGround) {
+    char.yVel-=9.8*dt;
+    char.pos.y+=char.yVel*dt;
+  }
+  if(char.pos.y<=groundY) {
+    char.pos.y=groundY; char.yVel=0; char.onGround=true;
+    if(isJumping) {
+      activeMode='Walk';
+      if(activeBtn) activeBtn.classList.remove('active');
+      activeBtn=document.querySelector('[data-action="Walking"]');
+      if(activeBtn) activeBtn.classList.add('active');
+      fadeToAction('Idle');
+    }
+  } else if(char.pos.y > groundY+0.05) {
+    char.onGround=false;
+  }
+
+  // ── Model transform ───────────────────────────────────────────────────────
+  const isMoving = (activeMode==='Walk'||activeMode==='Run') &&
+                   (keys['ArrowUp']||keys['ArrowDown']||keys['ArrowLeft']||keys['ArrowRight']);
+  const bobAmt   = isMoving ? (activeMode==='Run' ? 0.13 : 0.07) : 0;
+  const bob      = Math.abs(Math.sin(char.bobTime)) * bobAmt;  // always positive → feet never sink underground
+
+  model.position.set(char.pos.x, char.pos.y + bob, char.pos.z);
+  char.targetQ.setFromAxisAngle(_up, char.angle);
+  char.facingQ.slerp(char.targetQ, Math.min(dt*6.5,1));
+  model.quaternion.copy(char.facingQ);
+
+  sun.target.position.copy(char.pos);
+  sun.target.updateMatrixWorld();
+
+  orbit.target.lerp(_tmp.set(char.pos.x, char.pos.y+1.1, char.pos.z), 0.08);
+  orbit.update();
+
+  if(mixer) mixer.update(dt);
+}
+
+// ─── RESIZE ──────────────────────────────────────────────────────────────────
+window.addEventListener('resize', ()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ─── LOOP ────────────────────────────────────────────────────────────────────
+(function animate() {
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(), 0.05);
+  update(dt);
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
