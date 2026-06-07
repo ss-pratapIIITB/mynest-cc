@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="index.css">
+    <script src="index.js"></script>
+    <style>
+      /* Fit the game neatly into the iframe strip */
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #fff;
+        height: 200px;
+      }
+      /* Hide the "press space" message box — the label outside handles that */
+      #messageBox { display: none !important; }
+      /* Center the runner area vertically */
+      #main-frame-error {
+        padding-top: 30px !important;
+      }
+    </style>
+</head>
+<body id="t" class="offline">
+    <div id="main-frame-error" class="interstitial-wrapper">
+        <div id="main-content">
+            <div class="icon icon-offline" alt=""></div>
+        </div>
+        <div id="offline-resources">
+            <img id="offline-resources-1x" src="assets/default_100_percent/100-offline-sprite.png">
+            <img id="offline-resources-2x" src="assets/default_200_percent/200-offline-sprite.png">
+            <template id="audio-resources">
+                <audio id="offline-sound-press" src="data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA//////////////////////////////////////////////////////////////////8AAABhTEFNRTMuMTAwA8MAAAAAAAAAABQgJAUHQQAB9AAAAnGMHkkIAAAAAAAAAAAAAAAAAAAA"></audio>
+                <audio id="offline-sound-hit" src="data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA//////////////////////////////////////////////////////////////////8AAABhTEFNRTMuMTAwA8MAAAAAAAAAABQgJAUHQQAB9AAAAnGMHkkIAAAAAAAAAAAAAAAAAAAA"></audio>
+                <audio id="offline-sound-reached" src="data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA//////////////////////////////////////////////////////////////////8AAABhTEFNRTMuMTAwA8MAAAAAAAAAABQgJAUHQQAB9AAAAnGMHkkIAAAAAAAAAAAAAAAAAAAA"></audio>
+            </template>
+        </div>
+    </div>
+</body>
+</html>
