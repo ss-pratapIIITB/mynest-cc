@@ -419,8 +419,16 @@ export default function ScoutPage() {
         "",
       ]),
     ].join("\n");
-    navigator.clipboard.writeText(md).catch(() => {});
-    toast("Exported as Markdown");
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `scout-notes-${new Date().toISOString().slice(0, 10)}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast("Downloaded as Markdown");
   };
 
   const handleBootDone = useCallback(() => {

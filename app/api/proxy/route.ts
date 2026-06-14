@@ -360,10 +360,13 @@ export async function GET(req: NextRequest) {
         const reader = new Readability(document as unknown as Document);
         const article = reader.parse();
         if (article?.title && article?.content) {
+          const cleanContent = article.content
+            .replace(/\s*loading=["']lazy["']/gi, "")
+            .replace(/\s*data-src=["'][^"']*["']/gi, "");
           return new NextResponse(readerHtml({
             title: article.title,
             byline: article.byline ?? null,
-            content: article.content,
+            content: cleanContent,
             siteName: article.siteName ?? null,
           }, finalUrl), {
             headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -423,6 +426,16 @@ export async function GET(req: NextRequest) {
     $("style").each((_, el) => {
       const css = $(el).html();
       if (css) $(el).html(rewriteCss(css, finalUrl));
+    });
+
+    /* Eager-load all images: remove lazy attribute and promote data-src → src */
+    $("img").each((_, el) => {
+      $(el).removeAttr("loading");
+      const dataSrc = $(el).attr("data-src");
+      const src = $(el).attr("src") ?? "";
+      if (dataSrc && (!src || src.startsWith("data:") || /blank|placeholder|1x1|pixel/i.test(src))) {
+        $(el).attr("src", dataSrc).removeAttr("data-src");
+      }
     });
 
     /* Inject scanner at end of body */
