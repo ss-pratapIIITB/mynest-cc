@@ -340,9 +340,9 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    /* ── Non-HTML/CSS: pass through ── */
+    /* ── Non-HTML/CSS: stream directly — no buffering ── */
     if (!ct.includes("text/html")) {
-      return new NextResponse(await res.arrayBuffer(), {
+      return new NextResponse(res.body, {
         headers: {
           "Content-Type": ct,
           "Access-Control-Allow-Origin": "*",
@@ -360,13 +360,23 @@ export async function GET(req: NextRequest) {
         const reader = new Readability(document as unknown as Document);
         const article = reader.parse();
         if (article?.title && article?.content) {
-          const cleanContent = article.content
-            .replace(/\s*loading=["']lazy["']/gi, "")
-            .replace(/\s*data-src=["'][^"']*["']/gi, "");
+          /* Rewrite all URLs in extracted content so relative paths resolve correctly */
+          const $r = cheerio.load(article.content, { xmlMode: false });
+          $r("img").each((_, el) => {
+            const src = $r(el).attr("src");
+            if (src) $r(el).attr("src", rewriteUrl(src, finalUrl));
+            const ds = $r(el).attr("data-src");
+            if (ds) { $r(el).attr("src", rewriteUrl(ds, finalUrl)); $r(el).removeAttr("data-src"); }
+            $r(el).removeAttr("loading");
+          });
+          $r("a").each((_, el) => {
+            const href = $r(el).attr("href");
+            if (href) $r(el).attr("href", rewriteUrl(href, finalUrl));
+          });
           return new NextResponse(readerHtml({
             title: article.title,
             byline: article.byline ?? null,
-            content: cleanContent,
+            content: $r("body").html() ?? article.content,
             siteName: article.siteName ?? null,
           }, finalUrl), {
             headers: { "Content-Type": "text/html; charset=utf-8" },
