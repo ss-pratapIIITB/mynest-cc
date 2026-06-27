@@ -1,0 +1,1263 @@
+---
+title: "The Complete LLM Evals Guide — Everything You Need to Know"
+date: "2026-06-27"
+excerpt: "A comprehensive, interview-ready guide to LLM evaluation: error analysis, dataset building, LLM-as-judge, code-based evals, agent evals, and real stories from DoorDash, GitHub, Asana, and others. Based on Hamel Husain, Eugene Yan, and Anthropic's published work."
+tags: ["evals", "llm", "evaluation", "llm-as-judge", "production", "testing", "agents"]
+---
+
+# The Complete LLM Evals Guide — Everything You Need to Know
+
+> *"Unsuccessful products almost always share a common root cause: a failure to create robust evaluation systems."*
+> — Hamel Husain
+
+This is a dense, opinionated guide for engineers who want to understand LLM evaluation deeply — from first principles to production. It draws on [Hamel Husain's Evals FAQ](https://hamel.dev/blog/posts/evals-faq/), [his LLM-as-Judge guide](https://hamel.dev/blog/posts/llm-judge/), [Eugene Yan's task-specific evals work](https://eugeneyan.com/writing/evals/), [Anthropic's agent eval guide](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents), and real production stories from DoorDash, GitHub, Asana, and more.
+
+---
+
+## Table of Contents
+
+1. [Why Evals Exist](#why-evals-exist)
+2. [The Eval Mindset](#the-eval-mindset)
+3. [Error Analysis — Do This First](#error-analysis)
+4. [Building Your Dataset](#building-your-dataset)
+5. [Annotation & Human Judgment](#annotation--human-judgment)
+6. [LLM-as-a-Judge — The 7-Step Process](#llm-as-a-judge)
+7. [LLM-as-Judge Biases & Pitfalls](#llm-as-judge-biases--pitfalls)
+8. [Code-Based Evaluators](#code-based-evaluators)
+9. [Task-Specific Metrics](#task-specific-metrics)
+10. [RAG Evaluation](#rag-evaluation)
+11. [Agent Evaluation](#agent-evaluation)
+12. [CI/CD — Evals in the Pipeline](#cicd---evals-in-the-pipeline)
+13. [Guardrails vs Evaluators](#guardrails-vs-evaluators)
+14. [Production Monitoring](#production-monitoring)
+15. [Real Company Stories](#real-company-stories)
+16. [The Failure Catalog](#the-failure-catalog)
+17. [Interview Q&A](#interview-qa)
+
+---
+
+## Why Evals Exist
+
+Three processes define whether an AI product succeeds:
+
+```
+1. Evaluating quality    → Do outputs meet the bar?
+2. Debugging failures    → Why is it failing?
+3. Changing behavior     → Prompting, fine-tuning, retrieval changes
+```
+
+Most teams spend all their time on #3 — changing behavior — without a reliable way to measure whether changes helped. The result: **whack-a-mole**. Fix one thing, break another, no way to know if you're making net progress.
+
+Evals solve this. They give you a ground truth signal against which to measure every change.
+
+**The iteration flywheel:**
+
+```
+Build evals → Measure baseline → Make change → Re-measure → Ship if better
+```
+
+Without evals, you're flying blind. With them, you can iterate with confidence.
+
+> **The insight most teams miss:** Evaluation systems aren't just quality measurement. They're also the foundation for fine-tuning (labeled data), debugging (trace databases), and production monitoring (online evaluation). One investment, multiple returns.
+
+---
+
+## The Eval Mindset
+
+### What evals are
+
+- **Product-specific quality measurement.** Not foundation model benchmarks. Not generic "helpfulness." Whether *your specific system* does *what your specific users need*.
+- **A living artifact**, not a one-time checklist. Maintained continuously, extended as new failures appear.
+- **Aligned to business outcomes** — evals that don't correlate with what users care about are noise.
+
+### What evals are NOT
+
+- **Foundation model benchmarks** (MMLU, HumanEval, HellaSwag) — these measure model capability, not whether your product works.
+- **A replacement for looking at data.** Evals are a summary. The real value is in the data they're summarizing.
+- **An excuse to stop thinking.** "Our eval score went up" is not the same as "users are happier."
+
+### The three levels of evaluation
+
+| Level | What | When | Cost |
+|-------|------|------|------|
+| **Offline eval** | Fixed test set, automated | Every PR/change | Low |
+| **Online eval** | Production traffic, sampling | Continuous | Medium |
+| **A/B testing** | Controlled user experiment | Major changes | High |
+
+> Start offline, build toward online. Don't skip to A/B before your offline eval is trustworthy.
+
+---
+
+## Error Analysis
+
+**Error analysis is the most important eval activity. Do it before building any infrastructure.**
+
+Error analysis means: read your outputs. Find out how and why the system is failing. Categorize the failures. Use that to decide what to measure.
+
+### The Process (from Hamel)
+
+1. **Collect traces** — get 100 real or representative user interactions (or close to it)
+2. **Open coding** — annotators read each trace and write free-form notes: what's wrong? what's right? anything surprising?
+3. **Axial coding** — organize notes into failure categories (e.g., "missed date filter," "wrong tone," "fabricated citation")
+4. **Continue until theoretical saturation** — when you stop seeing new failure categories (~100 traces usually gets you there)
+5. **Prioritize by frequency × severity** — not all failures are equal
+
+```python
+# Bare minimum error analysis setup
+import pandas as pd
+
+# Load traces
+traces = pd.read_json("traces.jsonl", lines=True)
+
+# Sample 100 for manual review
+sample = traces.sample(100, random_state=42)
+
+# Open coding: add a column and fill it in manually
+sample["notes"] = ""  # Fill this in your spreadsheet/notebook
+
+# After open coding: axial coding
+# Map notes to categories
+failure_categories = {
+    "wrong_tone": 0,
+    "missed_constraint": 0,
+    "hallucinated_fact": 0,
+    "off_topic": 0,
+    "too_verbose": 0,
+}
+```
+
+### Why most teams skip this (and why that's wrong)
+
+Teams want to build evaluation *infrastructure*. They set up LangSmith, configure RAGAS, build dashboards. That's all fine — but without error analysis first, you don't know what to measure. Your metrics will measure the wrong things.
+
+**"60-80% of development time should be understanding failures before building automated checks."** — Hamel Husain
+
+### The "intern test"
+
+A quick sanity check from Applied-LLMs: could an average college student succeed at this task given the same inputs? If no — the problem is in the context, not the model. Fix the context first.
+
+---
+
+## Building Your Dataset
+
+### Sources of data (in order of value)
+
+1. **Real production traffic** — the gold standard. Actual user queries, actual failures.
+2. **User-reported bugs** — high signal; these are failures worth fixing.
+3. **Adversarial cases** — curated edge cases your team expects to be hard.
+4. **Synthetic data** — useful for scaling, unreliable for complex domains.
+
+### Building a golden dataset
+
+A golden dataset = (input, expected output, source) tuples that domain experts have verified.
+
+```python
+# Golden dataset structure
+golden = [
+    {
+        "input": "What is the refund policy for electronics returned after 35 days?",
+        "expected_output": "Electronics returned after 30 days are not eligible for refund under standard policy. Exceptions require manager approval.",
+        "source": "return-policy.pdf §3.2",
+        "failure_category": "date_boundary",  # The category this tests
+    },
+    # ... 50-200 items
+]
+```
+
+**How many examples do you need?**
+
+| Stage | Size | Purpose |
+|-------|------|---------|
+| Initial error analysis | 20–50 | Manual review, find failure categories |
+| CI/CD regression suite | 100–300 | Automated gate per PR |
+| LLM judge calibration | 50–100 per failure category | Validate judge alignment |
+| Production monitoring | Continuous stream | Trend tracking |
+
+### Synthetic data — when and how
+
+Useful for: scaling a sparse category, testing edge cases you haven't seen yet, augmenting coverage of underrepresented user types.
+
+**The right way to generate synthetic test inputs:**
+
+```python
+# Step 1: Define structured dimensions
+dimensions = {
+    "user_type": ["new_user", "expert", "non_native_speaker", "elderly"],
+    "scenario": ["no_match", "multiple_matches", "ambiguous_request", "system_error"],
+    "feature": ["email_summary", "order_tracking", "refund_request"],
+}
+
+# Step 2: Generate structured tuples first (explicit control)
+import itertools
+test_matrix = list(itertools.product(
+    dimensions["user_type"],
+    dimensions["scenario"],
+    dimensions["feature"],
+))
+
+# Step 3: Convert tuples to natural language
+prompt_template = """
+Generate a realistic user message for a customer support chatbot.
+User type: {user_type}
+Scenario: {scenario}
+Feature being tested: {feature}
+
+Write ONLY the user message, nothing else.
+"""
+
+# Step 4: Feed through your ACTUAL system (not an LLM directly)
+# You want to test the system's behavior on these inputs
+```
+
+**When synthetic data is unreliable:**
+- Complex domain content (medical, legal, financial)
+- Low-resource languages
+- High-stakes edge cases
+- Underrepresented user groups
+
+> **Rule of thumb:** Always generate synthetic *inputs*, run them through your actual system, and then get real human or expert annotation on the outputs. Never use LLMs to generate both inputs and expected outputs without domain expert review.
+
+---
+
+## Annotation & Human Judgment
+
+### The binary judgment principle
+
+**Use pass/fail (binary) judgments, not Likert scales (1–5).**
+
+Why:
+- Forces clarity: you have to decide what actually matters
+- "What separates a 3 from a 4?" — nobody knows. 2s and 3s cluster into the same vague unhappiness.
+- Higher consistency between annotators
+- More actionable (you know what to fix)
+
+```python
+# Bad: Likert scale
+{"helpfulness": 3, "accuracy": 4, "tone": 2}
+# → What do you do with this?
+
+# Good: binary with critique
+{"pass": False, "critique": "Answer cited a policy that doesn't apply to this scenario. User asked about electronics, response cited furniture return policy. Failed because: wrong policy section, potentially misleads user."}
+# → Clear, actionable, explains why
+```
+
+> **Resist pressure to add dimensions.** Teams want to measure helpfulness AND accuracy AND tone AND conciseness AND safety. What you end up with is a multi-dimensional score nobody can interpret. Start with one thing: does this response accomplish the task for this user?
+
+### The benevolent dictator model
+
+For most teams: **one trusted domain expert** as the quality decision-maker.
+
+Not a committee. Not a crowdsourced average. One person whose judgment you trust and who is close enough to the users to know what good looks like.
+
+Why:
+- Committees average out to mediocrity
+- Multiple annotators require inter-annotator agreement work that's hard to get right
+- One trusted expert sets a consistent bar
+
+When to use multiple annotators: high-stakes domains (medical, legal), large-scale annotation where one person can't cover everything, or when you explicitly want to measure disagreement (signals ambiguous cases).
+
+### What makes a good critique
+
+The critique is the most valuable part of annotation. It must be:
+
+- **Specific enough for a new employee to understand** what went wrong
+- **Include context** about why this counts as a failure
+- **Explain edge cases** — why does this pass even though it's imperfect? Why does it fail even though it's mostly right?
+
+**Bad critique:** "The answer is wrong."
+
+**Good critique:** "The answer says the refund window is 30 days for electronics, which is correct in the standard policy, but the user mentioned they bought the item during the holiday sale period. Holiday sale items have a 15-day return window per policy §4.1. The response failed to ask a clarifying question and instead gave misleading information."
+
+---
+
+## LLM-as-a-Judge
+
+LLM-as-a-judge is using a (often stronger) LLM to evaluate the outputs of your primary system. It's not a silver bullet, but it's the most scalable way to evaluate at volume.
+
+### The 7-Step Critique Shadowing Process (Hamel Husain)
+
+**Step 1: Identify your principal domain expert**
+
+The one or two people whose judgment defines what "good" means for your system.
+
+- Not the developer. Not the PM (unless they're the domain expert).
+- A psychologist for a mental health app, a lawyer for legal document analysis, the customer service director for a support bot.
+
+> *"Developers should not self-appoint as domain experts. Relying on convenient proxies is a recipe for disaster."*
+
+**Step 2: Create a diverse dataset**
+
+Structure it across meaningful dimensions:
+- **Features:** specific AI capabilities (email summarization, order tracking, refund handling)
+- **Scenarios:** situations the AI must handle (no matches, multiple matches, ambiguous requests, edge cases)
+- **Personas:** user types (new users, experts, non-native speakers, elderly users)
+
+Generate ~30 examples initially, then keep going until new failure modes stop appearing.
+
+**Step 3: Domain expert reviews with pass/fail + critiques**
+
+The expert goes through each example:
+- Makes a binary pass/fail judgment
+- Writes a detailed critique explaining the reasoning
+- Includes edge cases and exceptions
+
+**Step 4: Fix obvious errors**
+
+Before building automated judges, fix the pervasive errors the expert review surfaced. Iterate back to Step 3 until the system stabilizes.
+
+**Step 5: Build the LLM judge iteratively**
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel
+
+class EvalResult(BaseModel):
+    pass_fail: bool
+    critique: str
+    confidence: str  # "high" / "medium" / "low"
+
+judge_prompt = ChatPromptTemplate.from_template("""
+You are an expert evaluator for a customer support AI assistant.
+
+EXAMPLES (from domain expert):
+
+Example 1 (PASS):
+User: "I bought headphones 20 days ago. Can I return them?"
+AI: "Yes, electronics can be returned within 30 days of purchase. 
+      Please bring your receipt and the original packaging."
+Expert critique: "Correct policy cited, actionable next steps given, 
+                  appropriate tone. PASS."
+
+Example 2 (FAIL):  
+User: "I bought headphones during the holiday sale 20 days ago. 
+        Can I return them?"
+AI: "Yes, electronics can be returned within 30 days of purchase."
+Expert critique: "Missed the holiday sale context. Holiday items have a 15-day 
+                  window (policy §4.1). Response is factually wrong for this 
+                  scenario. FAIL."
+
+---
+
+Now evaluate this interaction:
+User query: {query}
+AI response: {response}
+Context: {context}
+
+Provide your pass/fail judgment and a detailed critique.
+""")
+
+# Iterate:
+# 1. Run on your test set
+# 2. Compare to domain expert judgments
+# 3. Track precision/recall (not just raw agreement)
+# 4. Refine prompt based on disagreements
+# 5. Repeat until acceptable alignment (~3+ iterations)
+```
+
+**Step 6: Perform error analysis on the judge's outputs**
+
+Calculate failure rates by dimension to find patterns:
+- Which feature types is your system worst at?
+- Which user personas get the worst experience?
+- Which scenarios keep failing?
+
+**Step 7: Create specialized judges only when needed**
+
+After understanding failure patterns, build targeted judges for specific failure modes. Some errors may be better caught by code-based assertions.
+
+### How to measure judge quality
+
+Don't use raw agreement rate — it's misleading when classes are imbalanced.
+
+```python
+from sklearn.metrics import precision_score, recall_score, cohen_kappa_score
+import numpy as np
+
+# Human expert labels (ground truth)
+human_labels = [1, 1, 0, 1, 0, 0, 1, 1, 0, 1]  # 1=pass, 0=fail
+
+# LLM judge labels
+judge_labels = [1, 1, 0, 1, 1, 0, 1, 0, 0, 1]
+
+# Track precision and recall separately (especially with imbalanced data)
+precision = precision_score(human_labels, judge_labels)
+recall = recall_score(human_labels, judge_labels)
+
+# Cohen's kappa: accounts for chance agreement (more honest than raw agreement)
+kappa = cohen_kappa_score(human_labels, judge_labels)
+
+print(f"Precision: {precision:.2f}")  # How often judge's PASSes are correct
+print(f"Recall: {recall:.2f}")        # How often judge catches actual PASSes  
+print(f"Cohen's κ: {kappa:.2f}")      # κ < 0.4 = poor, 0.4-0.6 = moderate, >0.6 = good
+```
+
+> **"Raw agreement is generally not recommended"** — especially with imbalanced data (e.g., 90% of responses pass), a judge that says "pass" to everything has 90% agreement but zero value.
+
+---
+
+## LLM-as-Judge Biases & Pitfalls
+
+These are well-documented, empirical findings:
+
+### Position bias
+LLM evaluators consistently favor responses in specific positions in pairwise comparisons.
+- gpt-3.5: 50% position bias
+- claude-v1: 70% bias toward first-position responses
+
+**Fix:** Randomize order. Run both orderings, take the average.
+
+### Verbosity bias
+Both claude-v1 and gpt-3.5 preferred longer responses over 90% of the time, even when information content was identical.
+
+**Fix:** Explicit conciseness instruction in the judge prompt. Or use pairwise comparison at equal lengths.
+
+### Self-enhancement bias (the worst one)
+- gpt-4 favored its own outputs by 10% higher win rates
+- claude-v1 showed 25% preference for its own outputs
+
+**Fix: Never use the same model family to judge its own outputs.** If your primary model is Claude, use GPT or an open-source judge. If it's GPT, use Claude.
+
+### Factual consistency weakness
+- gpt-3.5 achieved >95% precision identifying *consistent* summaries BUT only 30–60% recall on *inconsistent* ones
+- Only 58.5% accuracy distinguishing factual from hallucinated summaries
+
+**Fix:** Use NLI (Natural Language Inference) models for factual consistency, not pure LLM judges. Combine.
+
+### When LLM-as-judge works well
+- Multi-turn dialogue and subjective assessment: gpt-4 achieved **85% agreement** with human experts on MT-Bench — *exceeding* human-human agreement of 81%
+- Binary factuality detection: gpt-3.5-turbo had 0.85 accuracy on CNN, 0.76 on XSUM
+- Pairwise comparison on tone, coherence, style
+
+### When it doesn't
+- Detecting subtle partial hallucinations (SelfCheckGPT: 0.53 PR-AUC on partial vs 0.93 on obvious)
+- High variance across datasets — "each model performed poorly on some datasets"
+- When the judge hasn't been calibrated to your domain expert's criteria
+
+### The ensemble trick
+A panel of smaller models (Command-R + gpt-3.5 + Haiku) achieved **higher correlation with human judgments** than gpt-4 alone at one-seventh the cost. Worth testing.
+
+---
+
+## Code-Based Evaluators
+
+Before reaching for LLM judges, ask: can I just write a function?
+
+Code-based evaluators are:
+- Fast (milliseconds, not seconds)
+- Cheap (no LLM calls)
+- Deterministic (same input → same output)
+- Easy to debug
+- Easy to version
+
+### Types of code-based evaluators
+
+```python
+# 1. String assertions
+def eval_no_pii(output: str) -> bool:
+    """Ensure no email/SSN/phone in output."""
+    import re
+    patterns = [
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # email
+        r'\b\d{3}-\d{2}-\d{4}\b',  # SSN
+        r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b',  # phone
+    ]
+    return not any(re.search(p, output) for p in patterns)
+
+# 2. JSON schema validation
+from pydantic import BaseModel, ValidationError
+
+class ExpectedOutput(BaseModel):
+    action: str
+    confidence: float
+    sources: list[str]
+
+def eval_json_schema(output: str) -> bool:
+    import json
+    try:
+        data = json.loads(output)
+        ExpectedOutput(**data)
+        return True
+    except (json.JSONDecodeError, ValidationError):
+        return False
+
+# 3. Exact/regex matching
+def eval_contains_source_citation(output: str) -> bool:
+    import re
+    return bool(re.search(r'\[Source:.*?\]|\[Doc \d+\]|\(\d{4}\)', output))
+
+# 4. Length constraints
+def eval_concise(output: str, max_words: int = 150) -> bool:
+    return len(output.split()) <= max_words
+
+# 5. Code execution (for coding agents)
+def eval_code_runs(code: str, test_cases: list) -> float:
+    """Returns fraction of test cases passed."""
+    import subprocess, tempfile, os
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(code)
+        fname = f.name
+    
+    passed = 0
+    for test in test_cases:
+        result = subprocess.run(
+            ["python", fname],
+            input=test["input"], capture_output=True, text=True, timeout=5
+        )
+        if result.stdout.strip() == test["expected"]:
+            passed += 1
+    
+    os.unlink(fname)
+    return passed / len(test_cases)
+```
+
+### When to use code vs LLM judge
+
+| Situation | Code | LLM judge |
+|-----------|------|-----------|
+| Format compliance | ✓ | |
+| PII/toxicity rules | ✓ | |
+| Length constraints | ✓ | |
+| JSON schema | ✓ | |
+| Code execution | ✓ | |
+| Tone / style | | ✓ |
+| Complex reasoning quality | | ✓ |
+| Factual consistency | Both | Both |
+| Relevance to question | | ✓ |
+
+> **Default to code. Reach for LLM judges when there's no objective rule you can encode.**
+
+---
+
+## Task-Specific Metrics
+
+Generic metrics ("helpfulness" on a 1-5 scale) almost never correlate with what you actually care about. Here are the right metrics by task type (from Eugene Yan's work):
+
+### Classification / Extraction
+
+| Metric | When to use | Notes |
+|--------|-------------|-------|
+| **Precision** | When false positives are costly | How many predicted positives are correct |
+| **Recall** | When false negatives are costly | How many true positives did we catch |
+| **ROC-AUC** | General performance across thresholds | High = well-separated distributions |
+| **PR-AUC** | Imbalanced classes | Better than ROC-AUC when one class is rare |
+| **Cohen's κ** | Multi-class, with chance adjustment | More honest than raw accuracy |
+
+> A model can have high ROC-AUC and still not be production-suitable if probability distributions overlap too much. Always look at the distribution, not just the summary metric.
+
+### Summarization
+
+| Metric | What it measures | Recommendation |
+|--------|-----------------|----------------|
+| Factual consistency (NLI) | Does summary accurately reflect source? | **Use this** |
+| Relevance (reward model) | Does it cover key points? | Use if you have data for fine-tuning |
+| Length adherence | Meets word count spec? | Simple code check |
+| ROUGE / BLEU | n-gram overlap | **Don't use** — poor signal, distributions too close |
+| BERTScore | Embedding similarity | **Don't use** — high variance from ground truth |
+
+**Factual consistency with NLI:**
+```python
+from transformers import pipeline
+
+nli = pipeline("text-classification", model="cross-encoder/nli-deberta-v3-large")
+
+def eval_factual_consistency(source: str, summary: str) -> float:
+    """Returns entailment probability (how well source supports summary)."""
+    result = nli(f"{source} [SEP] {summary}")
+    entailment = next(r for r in result if r["label"] == "ENTAILMENT")
+    return entailment["score"]
+
+# 5-10% factual inconsistency is normal even after good prompting
+# Getting below 2% is very hard; set realistic thresholds
+```
+
+### Translation
+
+BLEU is at the **bottom of the leaderboard** at WMT22 and WMT23. Don't use it.
+
+Better options:
+- **chrF** — character n-gram F-score; language-independent, no pre-tokenization needed
+- **COMET** — learned metric using XLM-RoBERTa, trained on human ratings; includes source
+- **COMETKiwi** — reference-free version; strong baseline
+
+### Safety / Toxicity
+
+- **RealToxicityPrompts** dataset — adversarial prompts designed to elicit toxic output
+- **BOLD** — Wikipedia-derived prompts across demographics and professions
+- Perspective API scoring with threshold p ≥ 0.5
+
+In at least 10% of adversarial cases, current models generate toxic output. In most normal contexts, it's rare. Know your threat model.
+
+---
+
+## RAG Evaluation
+
+Evaluate retrieval and generation separately. A RAG system can fail at either stage, and the fix is different.
+
+### Retrieval metrics
+
+| Metric | What it measures |
+|--------|-----------------|
+| **Recall@k** | Did the right chunk appear in top-k results? |
+| **Precision@k** | Of top-k results, how many were relevant? |
+| **MRR** (Mean Reciprocal Rank) | How high does the first relevant result rank? |
+| **NDCG@k** | Graded relevance; rewards ranking better results higher |
+
+```python
+# Recall@k — most important for RAG
+def recall_at_k(retrieved_ids: list, relevant_ids: set, k: int) -> float:
+    top_k = set(retrieved_ids[:k])
+    return len(top_k & relevant_ids) / len(relevant_ids)
+
+# Context precision — from RAGAS
+# "Of what was retrieved, how much was actually relevant?"
+# Context recall — from RAGAS  
+# "Of what was needed, how much was retrieved?"
+```
+
+### Generation metrics (RAGAS)
+
+```python
+from ragas import evaluate
+from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+from datasets import Dataset
+
+test_data = Dataset.from_dict({
+    "question": ["What is the return policy for electronics?"],
+    "answer": ["Electronics can be returned within 30 days."],
+    "contexts": [["Policy: Electronics — 30 day return window."]],
+    "ground_truth": ["Electronics have a 30-day return window."],
+})
+
+results = evaluate(test_data, metrics=[
+    faithfulness,        # Is the answer supported by context?
+    answer_relevancy,    # Is the answer relevant to the question?
+    context_precision,   # Of retrieved chunks, how many are relevant?
+    context_recall,      # Of needed info, how much was retrieved?
+])
+```
+
+### The RAG eval decision tree
+
+```
+If faithfulness < 0.8:
+  → Generation problem (grounding, prompt, model)
+  
+If context_recall < 0.7 AND faithfulness is OK:
+  → Retrieval problem (chunking, embedding, k value)
+  
+If context_precision < 0.7:
+  → Retrieval noise problem (too many irrelevant chunks)
+  
+If answer_relevancy < 0.8:
+  → Query understanding or generation focus problem
+```
+
+---
+
+## Agent Evaluation
+
+Agents are harder to evaluate because mistakes compound across turns. A wrong tool call in step 2 can cascade into 5 wrong steps downstream.
+
+### Key terminology (from Anthropic's guide)
+
+- **Trial** — one attempt at a task (run multiple times to account for variance)
+- **Transcript/Trace** — the complete record: inputs, tool calls, intermediate states, outputs
+- **Grader** — logic that scores some aspect of performance
+- **Harness** — infrastructure running the eval (provides tools, environment, aggregates results)
+- **pass@k** — probability at least 1 of k trials succeeds (measures capability ceiling)
+- **pass^k** — probability ALL k trials succeed (measures reliability floor)
+
+### pass@k vs pass^k — why both matter
+
+```python
+# Example: an agent that succeeds 60% of the time on a given task
+
+# pass@k = 1 - (1-p)^k
+def pass_at_k(p: float, k: int) -> float:
+    return 1 - (1 - p) ** k
+
+# pass^k = p^k
+def pass_all_k(p: float, k: int) -> float:
+    return p ** k
+
+p = 0.60  # 60% individual success rate
+
+print(f"pass@1:  {pass_at_k(p, 1):.0%}")  # 60%
+print(f"pass@3:  {pass_at_k(p, 3):.0%}")  # 94%
+print(f"pass@10: {pass_at_k(p, 10):.0%}") # 99.9%
+print()
+print(f"pass^1:  {pass_all_k(p, 1):.0%}")  # 60%
+print(f"pass^3:  {pass_all_k(p, 3):.0%}")  # 22%
+print(f"pass^10: {pass_all_k(p, 10):.0%}") # 0.6%
+```
+
+**The lesson:** A customer-facing agent that succeeds 60% of the time looks fine on pass@3 (94%) but is nearly unusable on pass^10 (0.6%). For any repeated user-facing action, you need pass^k to be high.
+
+### Three grader types for agents
+
+```python
+# Type 1: Code-based (fast, deterministic)
+def grade_task_completion(final_state: dict, expected: dict) -> bool:
+    """Check if end state matches expected."""
+    return (
+        final_state.get("ticket_created") == expected.get("ticket_created")
+        and final_state.get("assigned_to") == expected.get("assigned_to")
+    )
+
+# Type 2: Model-based (flexible, nuanced)
+def grade_response_quality(transcript: str, rubric: str) -> dict:
+    """LLM evaluates the full transcript against a rubric."""
+    prompt = f"""
+    Evaluate this agent interaction against the rubric.
+    
+    Transcript: {transcript}
+    
+    Rubric:
+    {rubric}
+    
+    Score each criterion 0-1 with reasoning.
+    """
+    return judge_llm.invoke(prompt)
+
+# Type 3: Human (gold standard, slow)
+# Use for calibrating model graders; run periodically
+```
+
+### Key principle: grade outcomes, not paths
+
+```python
+# BAD: rigid step checking
+def grade_brittle(tool_calls: list) -> bool:
+    expected_sequence = ["search_docs", "extract_info", "format_response"]
+    return [t["name"] for t in tool_calls] == expected_sequence
+
+# GOOD: outcome verification
+def grade_robust(final_answer: str, final_state: dict) -> bool:
+    # Did the agent accomplish the goal?
+    # It might have taken a different path — that's fine
+    return (
+        "30 days" in final_answer and  
+        final_state.get("policy_cited") == "electronics-return"
+    )
+```
+
+Agents regularly find valid approaches that weren't anticipated. Rigid step-checking penalizes good solutions.
+
+### Real bug: the CORE-Bench incident
+
+From Anthropic's guide: Claude Opus 4.5 initially scored 42% on CORE-Bench until a researcher found:
+- Rigid grading penalized '96.12' when the expected answer was '96.124991'
+- Ambiguous task specifications
+- Stochastic tasks that were impossible to reproduce
+
+**After fixing the eval bugs, score jumped to 95%.** The lesson: a 0% (or very low) pass rate on many trials usually signals a broken eval, not an incapable agent.
+
+---
+
+## CI/CD — Evals in the Pipeline
+
+### The eval gate pattern
+
+```yaml
+# .github/workflows/eval.yml
+name: LLM Evaluation Gate
+
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "app/**"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run regression eval suite
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python -m pytest tests/evals/ -v
+      
+      - name: Check thresholds
+        run: |
+          python scripts/eval_gate.py \
+            --faithfulness-min 0.85 \
+            --recall-min 0.80 \
+            --fail-on-regression
+```
+
+```python
+# scripts/eval_gate.py
+THRESHOLDS = {
+    "faithfulness": 0.85,
+    "answer_relevancy": 0.80,
+    "context_recall": 0.75,
+}
+
+results = run_eval_suite()
+baseline = load_baseline()
+
+failed = []
+for metric, threshold in THRESHOLDS.items():
+    score = results[metric]
+    if score < threshold:
+        failed.append(f"{metric}: {score:.3f} < {threshold}")
+    
+    # Also catch regressions from baseline
+    if score < baseline[metric] * 0.95:  # 5% tolerance
+        failed.append(f"REGRESSION {metric}: {score:.3f} < {baseline[metric]:.3f}")
+
+if failed:
+    for f in failed:
+        print(f"FAIL: {f}")
+    sys.exit(1)
+
+print("All eval gates passed.")
+```
+
+### What to put in CI vs production monitoring
+
+| CI (offline eval) | Production monitoring |
+|------------------|-----------------------|
+| Small, curated (100–300 examples) | Live traffic, sampled |
+| Must cover core features + known edge cases | Any user interaction |
+| Runs on every PR | Runs continuously |
+| Hard pass/fail threshold | Trend tracking + alerts |
+| Cheaper evaluators OK | Can afford heavier LLM judges (async) |
+| Frozen benchmark | Expanding dataset |
+
+---
+
+## Guardrails vs Evaluators
+
+These are different things that people often conflate:
+
+| | Guardrails | Evaluators |
+|-|-----------|-----------|
+| **Timing** | Synchronous (blocks output) | Asynchronous (after the fact) |
+| **Speed** | Must be fast (&lt;100ms) | Can be slow (seconds) |
+| **Purpose** | Safety enforcement | Quality measurement |
+| **Consequence** | Blocked response | Logging/alerting/improvement |
+| **Technique** | Simple rules, regex, small classifiers | LLM judges, NLI models, RAGAS |
+
+```python
+# Guardrail: synchronous, blocks bad output
+def guardrail_no_pii(output: str) -> tuple[bool, str]:
+    """Returns (should_block, reason)."""
+    if contains_pii(output):
+        return True, "Response contains PII — blocked."
+    if contains_competitor_mention(output):
+        return True, "Response mentions competitor — requires review."
+    return False, ""
+
+# Evaluator: async, measures quality
+async def evaluate_quality(trace_id: str, output: str, context: str):
+    """Async quality check — doesn't block users."""
+    score = await llm_judge.assess(output, context)
+    await metrics.record("faithfulness", score.faithfulness, trace_id=trace_id)
+    if score.faithfulness < 0.7:
+        await alerts.send(f"Low faithfulness: {trace_id}")
+```
+
+---
+
+## Production Monitoring
+
+### The sampling strategy
+
+You can't run expensive evaluators on every request. Sample strategically:
+
+```python
+import random
+
+def should_evaluate_trace(trace: dict) -> bool:
+    """Decide which traces to evaluate."""
+    # Always evaluate these
+    if trace.get("user_reported_issue"):
+        return True
+    if trace.get("agent_uncertainty_score", 0) > 0.8:
+        return True
+    if trace.get("response_latency_ms", 0) > 5000:
+        return True
+    
+    # Random sample 5% of the rest
+    return random.random() < 0.05
+
+def get_eval_depth(trace: dict) -> str:
+    """Cheap vs expensive eval."""
+    if trace.get("user_reported_issue"):
+        return "full"  # LLM judge + human review
+    return "lightweight"  # Code-based checks only
+```
+
+### What to track
+
+```python
+# Metrics to track per request (structured logging)
+logger.info("llm_response", **{
+    "trace_id": trace_id,
+    "latency_ms": latency,
+    "input_tokens": cb.prompt_tokens,
+    "output_tokens": cb.completion_tokens,
+    "faithfulness": faithfulness_score,
+    "has_citation": bool(citations),
+    "abstained": "don't have enough information" in output.lower(),
+    "cached": was_cache_hit,
+    "user_feedback": None,  # filled in later if user reacts
+})
+```
+
+### Alerts to set
+
+| Alert | Threshold | Why |
+|-------|-----------|-----|
+| Faithfulness rolling avg | &lt;0.80 | Hallucination spike |
+| P95 latency | &gt;4s | User experience |
+| Cache hit rate | &lt;10% (below expected) | Cache misconfiguration |
+| Retrieval empty | &gt;1% of requests | Index problem |
+| Error rate | &gt;2% | Reliability issue |
+| Abstention rate | &gt;15% (sudden spike) | Missing context or query distribution shift |
+
+---
+
+## Real Company Stories
+
+### DoorDash — RAG Support Chatbot
+
+**What they built:** A RAG-based support chatbot with multi-metric monitoring.
+
+**Metrics monitored:** retrieval correctness, response accuracy, grammar/language accuracy, coherence to context, relevance to request.
+
+**How they evolved evals:**
+1. Started with manual transcript review (a team reads random transcripts weekly)
+2. Transitioned to LLM-as-judge to scale the evaluation
+3. Maintained a dedicated human team reviewing random samples to *calibrate* the LLM judge
+4. Added an LLM Guardrail system for online monitoring to catch hallucinations and policy violations before they reach users
+
+**Lesson:** The human calibration team didn't go away when they added LLM-as-judge. They became the calibration layer, not the primary eval layer. **Humans + LLM judge, not humans OR LLM judge.**
+
+---
+
+### GitHub Copilot — Code Evaluation at Scale
+
+**What they built:** Comprehensive automated testing across ~100 containerized repositories with actual test suites.
+
+**How they evaluate:**
+- Run the generated code against the repo's real test suite: *% of tests that pass*
+- Measure similarity to the original known-working code
+- For chat responses: % of correctly answered questions
+- Use LLM judges for complex questions that don't have deterministic answers
+- Routinely **audit LLM judge outputs against human reviewers**
+
+**Lesson:** For code, leverage the existing test suite as the primary evaluator. Code has a built-in ground truth (does it run? do tests pass?) that most text tasks don't. **Use your domain's natural evaluation mechanism first.**
+
+---
+
+### Asana — Multi-Method Testing
+
+**What they built:** An in-house LLM unit testing framework for developers, plus PM-driven manual evaluation.
+
+**How they evaluate:**
+- Developers run automated LLM unit tests (similar to traditional unit tests, but for LLM responses)
+- Tests: capturing task details, finding data in large projects, verifying synthesized answers
+- LLM-as-judge with **best-of-3 runs** for accuracy (re-runs the judge 3 times, takes majority)
+- Integration tests for multi-prompt chains
+- Product managers do manual end-to-end testing on sandboxed data to assess **tone and style** — things the automated system can't reliably measure
+
+**Lesson:** Automated evals don't catch tone and style well. Keep humans involved for subjective dimensions. **PMs doing manual testing weekly is a feature, not a workaround.**
+
+---
+
+### Webflow — Hybrid Daily + Weekly Pattern
+
+**What they built:** Hybrid human + automated evaluation with a specific cadence.
+
+**How they evaluate:**
+- LLM judge evaluates against predefined criteria (automated)
+- Combine with heuristic true/false condition checks
+- Validate LLM-based evals against human evaluations side-by-side at regular intervals
+- **Automated scores for daily validation** (catch quick regressions)
+- **Manual scoring weekly** (validate significant changes)
+- Automated scoring detects unexpected quality regressions between weekly human reviews
+
+**Lesson:** The cadence matters. Daily automated + weekly human. Don't try to automate everything or keep everything manual. **Two-speed evaluation: fast for regressions, slow for correctness.**
+
+---
+
+### GitLab Duo — Centralized Eval Framework
+
+**What they built:** A centralized framework for end-to-end LLM feature validation across all Duo features.
+
+**How they evaluate:**
+- Created thousands of question-answer pairs as a custom prompt library (tailored to GitLab use cases)
+- Established baseline model performance using cosine similarity, cross-encoder similarity, and LLM judges
+- **Daily re-validation** during active feature development
+- Uses smaller-scale datasets as mini-proxies during iteration, then validates on the broader dataset
+
+**Lesson:** Build a centralized eval library, not per-feature eval silos. When you have one shared eval infrastructure, every team benefits from every other team's test cases. **Centralization of eval infrastructure pays compound interest.**
+
+---
+
+### Wix — Custom Domain Benchmarks
+
+**What they built:** Custom domain-specific benchmarks rather than relying on general-purpose ones.
+
+**How they evaluate:**
+- Built evaluation dataset from existing customer service chats and FAQs (real domain data)
+- LLM judges compare generated answers to ground truth
+- Domain-specific tasks: customer intent classification, segmentation, summarization, sentiment analysis
+- Tailored benchmarks assess domain knowledge — not "general reasoning"
+
+**Lesson:** Off-the-shelf benchmarks measure general capability, not whether your product works. Building custom benchmarks from your actual data and tasks requires more upfront work but gives dramatically better signal. **Generic benchmarks are better than nothing; custom benchmarks are better than generic.**
+
+---
+
+### Segment — Complex Multi-Valid-Answer Problems
+
+**What they built:** LLM-as-judge for queries with multiple correct SQL representations.
+
+**The challenge:** Text-to-SQL queries have multiple valid representations (different syntax, same result). Standard string matching fails.
+
+**How they evaluate:**
+- LLM-as-judge compares ground truth queries against generated outputs by *semantic meaning*, not syntax
+- Built a synthetic test dataset using an LLM Question Generator Agent that creates prompts from ground truth AST inputs
+- The judge evaluates "would these two queries return the same results?" rather than "are these identical strings?"
+
+**Lesson:** When your task has multiple valid correct answers, code-based exact matching fails. LLM judges can evaluate semantic equivalence. **Match your evaluator to your task's answer space — not just your output format.**
+
+---
+
+### Bolt AI — Evals Added Post-Launch
+
+**The story:** Bolt launched to widespread use *without* evals. Added them 3 months later.
+
+**What they built in 3 months:**
+- Agent runner that runs the agent on benchmark tasks
+- Static analysis grader for output correctness
+- Browser agent to actually run generated apps and test them
+- LLM judges for subjective behaviors (instruction following, tone)
+
+**Lesson:** You can add evals post-launch. It's harder (you're debugging a moving target), but it's not impossible. The key is **starting with your most common failure modes** rather than trying to build complete coverage from scratch. **Building evals after launch is harder than before — but infinitely better than never.**
+
+---
+
+## The Failure Catalog
+
+The most common eval mistakes, in rough order of frequency:
+
+**1. Skipping error analysis and going straight to infrastructure**
+
+Building a RAGAS dashboard without first reading 100 traces. Your metrics measure the wrong things.
+
+**2. Using Likert scales instead of binary judgments**
+
+"Helpfulness: 3/5" — what does that mean? What should you fix? Binary forces clarity.
+
+**3. Outsourcing error analysis**
+
+The whole point of error analysis is building product intuition. Outsourcing it means you get labels without understanding. You can outsource annotation volume, not the analysis.
+
+**4. Self-appointing as domain expert**
+
+Developers think they know what "good" looks like. They're often wrong. Find the real domain expert.
+
+**5. Using the same model to judge its own outputs**
+
+If your primary model is Claude, your judge shouldn't be Claude. 25% self-preference bias documented.
+
+**6. Trusting raw agreement rate**
+
+90% raw agreement on a dataset where 90% of responses pass means your judge is worthless. Use precision/recall and Cohen's κ.
+
+**7. Generic off-the-shelf metrics**
+
+"Helpfulness" and "coherence" on a generic rubric don't capture your specific failure modes. Build custom evaluators.
+
+**8. No CI integration**
+
+Running evals once at launch is almost as bad as not running them at all. You need to catch regressions before they ship.
+
+**9. Too many metrics**
+
+Five faithfulness scores, three relevancy scores, two consistency scores — you're buried in numbers. You need fewer, better-understood metrics that you actually act on.
+
+**10. Trusting your eval score and not looking at data**
+
+> *"The real value comes from looking at your data. The LLM judge is a hack to encourage this necessary discipline."* — Hamel Husain
+
+Eval scores summarize data. When something looks wrong, go look at the actual outputs, not the scores.
+
+**11. Fixed threshold without understanding distribution**
+
+Faithfulness of 0.85 is great in some domains and terrible in others. Set thresholds by understanding the actual distribution of your specific data, not by adopting someone else's numbers.
+
+**12. Building capability evals without regression evals**
+
+Capability evals tell you what the agent can do in theory. Regression evals tell you it still does what it used to. Both are necessary.
+
+---
+
+## Interview Q&A
+
+These are the questions interviewers actually ask about evals, with answers that demonstrate real understanding.
+
+---
+
+**Q: What's the first thing you do when starting to evaluate an LLM system?**
+
+Error analysis, not infrastructure. Read 20–50 actual outputs manually. Write notes on what's wrong. Then organize those notes into failure categories. The categories tell you what to measure.
+
+Most people jump to "let's set up RAGAS" or "let's configure LangSmith." That's backwards. You don't know what to measure until you understand how the system fails.
+
+---
+
+**Q: Why binary pass/fail instead of a 1-5 scale?**
+
+Three reasons:
+1. Nobody can consistently distinguish a 3 from a 4. Inter-annotator agreement on Likert scales is terrible.
+2. Binary forces you to decide: what actually matters? It's a clarity tool.
+3. Classification metrics (precision, recall, Cohen's κ) are far better understood than mean Likert scores.
+
+The pressure to use multi-dimensional scores is usually people wanting to feel comprehensive. Fight it.
+
+---
+
+**Q: What are the biases in LLM-as-judge that you've seen?**
+
+Three big ones:
+- **Position bias** — favors first or second response in pairwise comparison (up to 70% bias documented)
+- **Verbosity bias** — prefers longer responses even when content is identical
+- **Self-enhancement bias** — gpt-4 favors its own outputs by 10%, Claude by 25%
+
+Fixes: randomize pairwise order, run both orderings and average, never use the same model family to judge its own outputs, include conciseness instruction.
+
+---
+
+**Q: How do you validate an LLM judge?**
+
+You calibrate it against a domain expert's judgments on a held-out set.
+
+Specifically: the domain expert labels 50–100 examples. The judge labels the same examples. You measure precision, recall, and Cohen's κ between them (not raw agreement — it's misleading with imbalanced data).
+
+If κ > 0.6, the judge is usable. You then continue to spot-check monthly to catch drift.
+
+---
+
+**Q: What's the difference between guardrails and evaluators?**
+
+Guardrails are synchronous safety checks that block bad outputs. They must be fast (&lt;100ms) and are typically rule-based or small classifiers.
+
+Evaluators are asynchronous quality measurements that don't block users. They can use expensive LLM judges because they run offline. Their output is metrics, traces, and alerts — not blocked responses.
+
+You need both. They're not substitutes.
+
+---
+
+**Q: How would you evaluate a RAG system?**
+
+Separate retrieval from generation.
+
+For retrieval: Recall@k (did the right chunk appear in top-k?), Precision@k, MRR.
+
+For generation: faithfulness (is the answer supported by the context?), answer relevancy, context precision, context recall via RAGAS.
+
+The diagnostic: if faithfulness is low, it's a generation problem. If context recall is low, it's a retrieval problem. If context precision is low, you're retrieving noise.
+
+Always evaluate on a golden dataset with known correct answers and verified source documents.
+
+---
+
+**Q: How do you evaluate agents?**
+
+Start with end-to-end task success — did the agent accomplish the goal? Then drill into step-level diagnostics if needed.
+
+For reliability, track both pass@k (does it ever succeed?) and pass^k (does it always succeed?). For customer-facing agents, pass^k at k=3 or k=5 matters more than pass@k.
+
+Grade outcomes, not paths. Agents find valid approaches you didn't anticipate — rigid step-checking penalizes good solutions.
+
+Make sure each trial starts from a clean environment with no shared state from prior runs.
+
+---
+
+**Q: How do you set up evals in CI/CD?**
+
+Two things:
+
+First, a curated offline eval set of 100–300 examples covering core features and known edge cases. This runs on every PR. It's small, fast, cheap. Hard pass/fail thresholds.
+
+Second, production monitoring that samples live traffic (5–10%) and runs heavier async evaluators. This catches things the offline set doesn't — new failure modes, distribution shift, rare edge cases.
+
+The CI gate catches regressions before they ship. Production monitoring catches what slips through.
+
+---
+
+**Q: What's your eval stack for a production RAG system?**
+
+In practice, I'd use:
+- **RAGAS** for faithfulness, answer relevancy, context precision/recall
+- **DeepEval + pytest** for the CI gate (runs on every PR with hard thresholds)
+- **LangSmith or Langfuse** for per-request tracing and production debugging
+- **Custom LLM judge** calibrated to the domain expert, for subjective quality dimensions
+- **NLI model** for factual consistency (more reliable than LLM judge for hallucination detection)
+- **Code-based assertions** for format compliance, schema validation, PII checks
+
+The CI set is 100–200 hand-curated examples. Production monitoring samples ~5% of traffic and runs the LLM judge asynchronously.
+
+---
+
+**Q: What mistake do most teams make with evals?**
+
+Skipping error analysis. They set up the infrastructure — metrics, dashboards, CI/CD — without first understanding what failure modes actually exist. The metrics end up measuring something real but not the most important things.
+
+Or they do eval once at launch and not continuously. Evals that don't run on every change don't catch regressions, which is the main thing they're for.
+
+---
+
+**Q: How do you build a golden dataset from scratch?**
+
+Start with production traces — real interactions, especially ones users complained about. Get your domain expert to label 50–100 with binary pass/fail and detailed critiques.
+
+Organize the failures into categories. Make sure your dataset has examples in each category. For rare categories, generate synthetic inputs (but run them through the real system and get real human annotation on the outputs).
+
+Keep it small and high-quality rather than large and noisy. 50 well-curated examples with domain expert annotation beats 500 LLM-generated examples with automated labels.
+
+---
+
+## The Eval Flywheel
+
+When it all works together:
+
+```
+Production traces
+      ↓
+Error analysis → find failure categories
+      ↓
+Golden dataset with domain expert labels
+      ↓
+LLM judge (calibrated to domain expert)
+      ↓
+Automated CI gate (runs on every PR)
+      ↓
+Production monitoring (async, sampled)
+      ↓
+New failures → back to golden dataset
+      ↑_____________________________________↑
+```
+
+The flywheel compounds: every new failure becomes a test case, every test case improves the judge, every judge improvement gives you better signal on the next change.
+
+Teams with this flywheel iterate faster than teams without it. That's the whole point.
+
+---
+
+**Resources:**
+- [Hamel Husain — LLM Evals FAQ](https://hamel.dev/blog/posts/evals-faq/)
+- [Hamel Husain — Your AI Product Needs Evals](https://hamel.dev/blog/posts/evals/)
+- [Hamel Husain — LLM-as-a-Judge Complete Guide](https://hamel.dev/blog/posts/llm-judge/)
+- [Eugene Yan — Task-Specific LLM Evals](https://eugeneyan.com/writing/evals/)
+- [Eugene Yan — Evaluating LLM Evaluators](https://eugeneyan.com/writing/llm-evaluators/)
+- [Anthropic — Demystifying Evals for AI Agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+- [Applied LLMs — A Year of Building with LLMs](https://applied-llms.org/)
+- [RAGAS](https://docs.ragas.io/) | [DeepEval](https://docs.confident-ai.com/) | [LangSmith](https://docs.smith.langchain.com/)
+- [Hamel & Shreya Shankar — AI Evals Course on Maven](https://maven.com/parlance-labs/evals)
