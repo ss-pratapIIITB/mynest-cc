@@ -1,0 +1,262 @@
+---
+title: "Blog 6: Vector Stores & Similarity Search at Scale"
+date: "2026-06-15"
+excerpt: "Once chunks are embedded, you need somewhere to store them and a way to find the nearest ones — fast, across millions of vectors. This is what vector stores do, and how to choose one."
+tags: ["rag", "vector-stores", "ann", "similarity-search", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 6
+---
+
+# Vector Stores & Similarity Search at Scale
+
+This is **Blog 6** in the [RAG series](/blog).
+
+---
+
+## The Plain-English Idea
+
+Once every chunk is a vector, you need somewhere to put them and a way to find the closest ones to a query vector — fast, across potentially millions or billions of vectors. That's the job of a **vector store** (a.k.a. vector database). It does two things:
+1. Stores vectors (plus metadata and often the chunk text)
+2. Answers "give me the k vectors most similar to this one" in milliseconds
+
+---
+
+## How Similarity Is Measured
+
+### Cosine Similarity (the default)
+
+Measures the **angle** between two vectors, ignoring their length:
+
+```
+cos(θ) = (A · B) / (‖A‖ · ‖B‖)
+```
+
+- Same direction → angle 0° → cosine 1 → maximally similar
+- Perpendicular → 90° → cosine 0 → unrelated
+- Opposite → 180° → cosine −1 → opposite meaning
+
+**Why angle, not distance?** A short and a long document on the same topic have a large Euclidean (straight-line) distance because the long one has a bigger-magnitude vector. But they point the same direction, so cosine says "very similar" — which is what you want. **Cosine makes document length irrelevant.**
+
+### Dot Product
+
+`A · B` without normalizing. If the model outputs already-normalized vectors (length 1), cosine equals dot product — which is why vector DBs often default to dot product for speed. Check whether your embedding model outputs normalized vectors.
+
+### Euclidean (L2) Distance
+
+Straight-line distance. Sensitive to magnitude, so less common for text. Know it exists.
+
+---
+
+## How Search Stays Fast — ANN
+
+### The Naive Approach and Why It Fails
+
+The exact method is brute-force k-NN: compute similarity between the query and **every** stored vector, sort, take top-k. Perfectly accurate, but linear in corpus size — 10M vectors = 10M comparisons per query. At hundreds of queries per second, this collapses.
+
+*(For a few thousand vectors, brute force is genuinely fine — don't over-engineer small corpora.)*
+
+### Approximate Nearest Neighbor (ANN)
+
+Vector DBs build an **index** ahead of time (during offline indexing) that organizes vectors spatially so that at query time you only compare against a small, promising subset. The trade is in the name — **approximate**: you accept a tiny chance of missing the true #1 neighbor in exchange for ~100–1000× speed.
+
+For RAG that trade is almost always worth it, because you retrieve a set of candidates anyway and a re-ranker (Blog 9) cleans up the order.
+
+### HNSW — The One to Know by Name
+
+**Hierarchical Navigable Small World** — a multi-layer graph of vectors:
+
+```
+Top layer (sparse, long-range links):
+    ●──────────────────●──────────────●
+    
+Middle layers:
+    ●──────●──────●──────●──────●
+    
+Bottom layer (dense, short links):
+    ●─●─●─●─●─●─●─●─●─●─●─●─●─●
+```
+
+Search enters at the top, greedily hops toward the query through long-range links, then drops to denser layers to refine locally — like zooming in on a map from country → city → street. Instead of touching all 10M vectors you touch a few hundred along the path.
+
+**Key tunable knobs:**
+- `ef_search` — how hard to search at query time: higher = better recall, slower
+- `M` — graph connectivity: higher = better recall, more memory
+
+```python
+# Qdrant with HNSW
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, HnswConfigDiff
+
+client = QdrantClient("localhost", port=6333)
+client.create_collection(
+    collection_name="documents",
+    vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+    hnsw_config=HnswConfigDiff(
+        m=16,          # graph connectivity
+        ef_construct=100,  # index-time quality
+    ),
+)
+```
+
+### IVF (Inverted File Index)
+
+Partitions the vector space into clusters via k-means; at query time, searches only the nearest clusters. Tunable via `nprobe` (how many clusters to check). Generally lower recall than HNSW but cheaper to maintain on stable domains.
+
+### Quantization (Compression)
+
+To cut memory/storage:
+- **Product Quantization (PQ):** compress vectors into compact codes; big memory savings, small accuracy loss
+- **Binary quantization:** reduce to bits; e.g., Qdrant's binary quantization cuts memory ~40× for high-dim vectors
+
+Pair with a re-rank/refine step over full-precision vectors for the final ordering.
+
+---
+
+## Metadata Filtering & Hybrid Search
+
+### Metadata Filtering
+
+Real retrieval rarely wants pure semantic search. Attach metadata to each vector and filter on it:
+
+```python
+# Qdrant filtered search
+from qdrant_client.models import Filter, FieldCondition, MatchValue, Range
+
+results = client.search(
+    collection_name="documents",
+    query_vector=query_embedding,
+    query_filter=Filter(
+        must=[
+            FieldCondition(key="country", match=MatchValue(value="Indonesia")),
+            FieldCondition(key="date", range=Range(gte=1704067200)),  # after 2024
+        ]
+    ),
+    limit=10,
+)
+```
+
+Without this, "after 2024" and "in Indonesia" constraints are silently ignored by pure semantic search — embeddings don't encode date comparisons.
+
+### Hybrid Search (Dense + Sparse)
+
+Pure dense (semantic) search can miss **exact-match needs** — a specific part number, error code, or rare proper noun that keyword search would nail.
+
+**Hybrid search** combines:
+- **Dense** vector similarity (semantic meaning)
+- **Sparse** keyword search (BM25 / SPLADE)
+- Fused via **Reciprocal Rank Fusion (RRF)**
+
+```python
+# Weaviate hybrid search
+import weaviate
+
+client = weaviate.connect_to_local()
+collection = client.collections.get("Documents")
+
+response = collection.query.hybrid(
+    query="damaged electronics refund Indonesia",
+    alpha=0.5,  # 0=keyword only, 1=vector only, 0.5=balanced
+    limit=10,
+)
+```
+
+Hybrid is a strong default in production, especially for technical/code/legal corpora with exact-match terms.
+
+---
+
+## The 2026 Vector Store Landscape
+
+Choose by **data-platform commitment first**, scale and hybrid-search needs second — benchmarks are tie-breakers.
+
+| Store | Best for | Self-host? | Scale |
+|-------|---------|-----------|-------|
+| **pgvector** | Already on Postgres, <10M vectors | Yes (extension) | <50–100M |
+| **Pinecone** | Managed, hands-off | No (fully managed) | Billions |
+| **Qdrant** | Performance + filtering, open-source | Yes (+ cloud) | Hundreds of millions |
+| **Weaviate** | Best hybrid search, text-vectorization built-in | Yes (+ cloud) | Hundreds of millions |
+| **Milvus / Zilliz** | Billion-scale distributed | Yes (complex) | Billions |
+| **Chroma** | Prototyping, local dev | Yes | Millions |
+| **Vespa** | Large-scale hybrid + ranking | Yes (complex) | Billions |
+
+```python
+# pgvector — the default if you're already on Postgres
+from langchain_postgres import PGVector
+
+CONNECTION_STRING = "postgresql://user:pass@localhost:5432/mydb"
+
+vectorstore = PGVector(
+    embeddings=embeddings,
+    collection_name="documents",
+    connection=CONNECTION_STRING,
+)
+
+# Qdrant — open-source performance leader
+from langchain_qdrant import QdrantVectorStore
+
+vectorstore = QdrantVectorStore.from_documents(
+    docs,
+    embeddings,
+    url="http://localhost:6333",
+    collection_name="documents",
+)
+
+# Chroma — great for local development
+from langchain_chroma import Chroma
+
+vectorstore = Chroma.from_documents(
+    documents=docs,
+    embedding=embeddings,
+    persist_directory="./chroma_db",
+)
+```
+
+---
+
+## The Vector Store Failure Catalog
+
+1. **Brute force at scale** — no ANN index, linear search, falls over
+2. **Recall set too low** — `ef_search`/`nprobe` too aggressive for speed, missing true neighbors; answers silently degrade
+3. **No re-ranker to recover ANN approximation** — relying on raw ANN order in high-accuracy settings
+4. **No metadata filtering** — hard constraints (date, country, ACL) ignored
+5. **Pure dense, no hybrid** — missing exact-match terms (part numbers, error codes, proper nouns)
+6. **Permission bleed** — no ACL metadata/filter, so restricted docs are retrievable by anyone
+7. **Over-engineering** — standing up Milvus for 5,000 vectors when pgvector would do
+8. **Under-provisioning RAM** — vectors spilling out of memory, latency cratering; ignoring quantization
+9. **Separate vector DB when Postgres would do** — needless infra + sync complexity under 10M vectors
+
+---
+
+## The Decision Framework
+
+> "If you're already on Postgres and under ~10M vectors, pgvector — no new infra. If you want fully managed at scale, Pinecone. If you want open-source performance + filtering, Qdrant. If hybrid search is central, Weaviate. Billion-scale, Milvus."
+
+**The accuracy triad:**
+```
+ANN (wide recall) → metadata/hybrid filtering → re-ranker (precision)
+```
+
+---
+
+## Summary
+
+| Concept | Key Point |
+|---------|-----------|
+| Cosine similarity | Angle between vectors — length-invariant, default for text |
+| ANN | Builds an index offline; 100–1000× faster than brute force, slightly approximate |
+| HNSW | Multi-layer navigable graph; tune `ef_search` for recall/latency budget |
+| Hybrid search | Dense + sparse (BM25/SPLADE) fused via RRF — catches both semantic and exact-match |
+| Metadata filtering | Hard constraints (date, country, ACL) applied alongside semantic search |
+| Vector store choice | Platform commitment first, then scale and hybrid needs |
+
+---
+
+**Next:** [Blog 7 — Query Translation — Fixing Bad Queries Before Retrieval](/blog/rag-07-query-translation)
+
+**Resources:**
+- [Qdrant docs](https://qdrant.tech/documentation/)
+- [Weaviate docs](https://weaviate.io/developers/weaviate)
+- [pgvector (GitHub)](https://github.com/pgvector/pgvector)
+- [Pinecone docs](https://docs.pinecone.io/)
+- [LangChain vectorstores](https://python.langchain.com/docs/integrations/vectorstores/)
+- [ANN Benchmarks](https://ann-benchmarks.com/)
+- [HNSW paper](https://arxiv.org/abs/1603.09320)

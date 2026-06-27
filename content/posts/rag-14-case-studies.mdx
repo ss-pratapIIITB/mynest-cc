@@ -1,0 +1,292 @@
+---
+title: "Blog 14: Real-World RAG — Case Studies and Lessons from Production"
+date: "2026-06-23"
+excerpt: "What does RAG look like when it runs at real scale? Case studies from DoorDash, LinkedIn, Cloudflare, Cohere, and others — with the lessons that don't make it into the papers."
+tags: ["rag", "case-studies", "production", "doordash", "linkedin", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 14
+---
+
+# Real-World RAG — Case Studies and Lessons from Production
+
+This is **Blog 14** in the [RAG series](/blog).
+
+---
+
+## Why Case Studies Matter
+
+Papers describe ideal systems. Case studies describe what happens when those systems meet real users, real data, and real operational constraints. The gap is significant.
+
+This blog covers documented production deployments — with emphasis on what broke, what surprised, and what they'd do differently.
+
+---
+
+## Case Study 1: DoorDash — Internal Knowledge Assistant
+
+DoorDash built a RAG system to help customer support agents answer questions about policies and procedures without digging through internal wikis.
+
+**The setup:**
+- Source: internal Confluence pages, policy docs, support runbooks
+- Use case: agent-facing (not customer-facing)
+- Scale: thousands of support agents, hundreds of queries per minute
+
+**What they learned:**
+
+**1. Document freshness was the biggest problem, not retrieval accuracy.**
+
+Internal wikis are living documents. A policy changes, the wiki is updated, but the vector index wasn't refreshed. Agents got confident-sounding answers based on stale policy — which is worse than no answer.
+
+*Fix:* incremental indexing triggered on document edit (webhook → re-chunk → re-embed → upsert). They track `last_indexed_at` vs `last_modified_at` as a freshness health metric.
+
+**2. Table parsing ate more support tickets than anything else.**
+
+Support procedures are heavily tabular. Basic PDF/HTML parsers turned tables into mangled text. The system confidently retrieved wrong rows.
+
+*Fix:* Docling for HTML tables, camelot for PDF tables, structured representation stored as markdown tables before chunking.
+
+**3. Agents trusted the system too much early on.**
+
+After launch, trust was too high — agents stopped verifying, and when the system was wrong (freshness or parsing issues) they didn't catch it.
+
+*Fix:* Mandatory citation display on every answer (agents trained to spot-verify source before acting), confidence-based UI (low-confidence answers showed a "please verify" flag).
+
+**Key resource:** [DoorDash Engineering Blog — LLM-Powered Tooling](https://doordash.engineering/2023/09/26/doordash-is-using-llm-powered-tooling/)
+
+---
+
+## Case Study 2: LinkedIn — Skills and Learning Recommendations
+
+LinkedIn used RAG as part of a learning recommendation system — matching learners' stated goals and skills to relevant course content.
+
+**The challenge:** not "find the document that answers my question" but "match a learner's context to the right learning path." The content was structured (courses, skills, learning objectives) but the queries were free-text goal descriptions.
+
+**What they learned:**
+
+**1. Bi-encoder recall wasn't the bottleneck — relevance definition was.**
+
+The embedding model could retrieve semantically similar courses. But "similar to user's goal" and "right for user's level and context" are different. A course on "advanced React patterns" is highly similar to a goal of "learn React" but wrong for a beginner.
+
+*Fix:* Metadata filtering on level, prerequisites, and completion status. The self-query retriever pattern (Blog 8) — split "learn React" into semantic query + hard filters on skill level and completion.
+
+**2. Fine-tuning the embedding model on domain-specific pairs was the highest single accuracy improvement.**
+
+Generic sentence embeddings underperformed on learning-domain vocabulary. Training on (user_goal, relevant_course_title) pairs with hard negatives raised NDCG significantly.
+
+*Fix:* Collect implicit feedback (click-through, completion rate) as training signal. Fine-tune bi-encoder with [sentence-transformers](https://www.sbert.net/).
+
+**3. Re-ranking on multiple objectives, not just relevance.**
+
+Courses at the top of the semantic list were often already completed by the user, or too advanced, or too basic. Relevance alone wasn't the right objective.
+
+*Fix:* Multi-objective re-ranking: relevance + novelty (not completed) + appropriate level. Stacked as a re-ranker score with weighted sum.
+
+**Key resource:** [LinkedIn Engineering Blog — Practical RAG](https://engineering.linkedin.com/blog/2024/practical-text-to-sql-for-data-analytics)
+
+---
+
+## Case Study 3: Cloudflare — AI Gateway and RAG in the Edge
+
+Cloudflare added RAG capabilities to their AI Gateway product — running inference and retrieval at the edge (close to users) with Vectorize as their vector store.
+
+**The challenge:** sub-100ms total pipeline latency with retrieval. Standard RAG chains running on a single-region LLM API have 700ms+ latency from distant geographies.
+
+**What they learned:**
+
+**1. Cold-start embedding killed edge latency.**
+
+Edge functions typically have no warm model. Loading an embedding model per-request added 300–500ms.
+
+*Fix:* Cloudflare AI Workers for GPU-backed embedding at the edge. Keeps embedding close to the request without cold start.
+
+**2. Vector quantization became non-optional at edge scale.**
+
+Vectorize's edge nodes have constrained memory. Full-precision 1024-dim vectors for millions of docs exceeded capacity.
+
+*Fix:* Binary quantization (40× compression) with re-rank over full-precision for the shortlist. Recall hit ~3% at the quantization stage but the re-ranker recovered it.
+
+**3. Cache-first architecture changed the cost model entirely.**
+
+For public-facing RAG (same questions from many users), semantic caching at the edge cut LLM calls by ~60%.
+
+*Fix:* Vectorize as a semantic cache: embed the incoming question, check if there's a cached answer within cosine distance 0.97. If so, return cached. Otherwise generate, cache, return.
+
+**Key resource:** [Cloudflare Blog — Building RAG with Vectorize](https://blog.cloudflare.com/introducing-vectorize-enabling-vector-search-in-workers-ai/)
+
+---
+
+## Case Study 4: Cohere — Enterprise RAG with Reranking
+
+Cohere's [Command R+](https://cohere.com/blog/command-r-plus-microsoft-azure) model was explicitly designed for enterprise RAG, and they've published their lessons from running large-scale evaluation across customer deployments.
+
+**Pattern 1: The "grounding gap"**
+
+Across customer deployments, the single most common failure wasn't retrieval — it was the LLM using training knowledge instead of retrieved context. When retrieved context partially answered the question, models would "fill in" the rest from pretraining, inserting plausible-but-wrong information.
+
+*Fix:* Prompt design with hard "ONLY use the context" instruction + per-claim citation + NLI grounding check on outputs (Blog 10).
+
+**Pattern 2: "Re-ranking is worth its cost every time"**
+
+Adding Cohere Rerank to existing retrieval pipelines raised mean faithfulness by 8–15 points across their customer evals, consistently. It was their highest single-step recommendation.
+
+*Fix:* Always use two-stage retrieval (Blog 9) — the re-ranker's cost is negligible vs the improvement.
+
+**Pattern 3: The metadata problem at enterprise scale**
+
+Enterprise RAG deployments have heterogeneous document stores: some docs are dated, some aren't; some have department metadata, some don't; some are public internal, some confidential. When metadata is inconsistent, self-query filtering breaks silently.
+
+*Fix:* Metadata normalization at ingestion — enforce a canonical schema, populate missing fields from document structure/filename heuristics, and run a validation pass before indexing.
+
+**Key resources:** [Cohere RAG guides](https://docs.cohere.com/docs/retrieval-augmented-generation-rag) | [Command R citation mode](https://cohere.com/blog/command-r)
+
+---
+
+## The "Invisible Failures" Pattern
+
+A recurring theme across all case studies: **RAG fails silently**.
+
+- Bad retrieval → confident hallucination (looks like success to the user until they verify)
+- Stale documents → confidently wrong current-state answer
+- PII in retrieved context → compliance violation with no error log
+- ACL not enforced → confidential doc visible to unauthorized user (no exception raised)
+
+**The lesson:** production RAG needs active quality monitoring, not just error monitoring:
+
+```python
+# Don't just log errors — log quality signals
+logger.info("rag_response", **{
+    "user_id": user_id,
+    "faithfulness_score": faithfulness_check(answer, context),  # Active check
+    "retrieval_count": len(docs),
+    "has_abstention": "don't have enough information" in answer.lower(),
+    "latency_ms": latency,
+})
+```
+
+You need to be able to answer: "What was yesterday's faithfulness score? Did it drop?" Not just "were there errors?"
+
+---
+
+## Cross-Cutting Lessons
+
+Aggregating patterns across these cases and publicly documented deployments:
+
+### Lesson 1: Retrieval quality > generation model choice
+
+Switching from GPT-3.5 to GPT-4 with bad retrieval doesn't fix the system. Fixing retrieval with GPT-3.5 often beats unfixed retrieval with GPT-4. **Invest in retrieval first.**
+
+### Lesson 2: Freshness is an operational problem, not a launch problem
+
+Indexing once at launch is easy. Keeping the index fresh as documents change is a continuous ops problem. Build incremental indexing into the design, not as a post-launch fix.
+
+### Lesson 3: Humans in the loop at critical decision points
+
+None of the case studies above used RAG to make autonomous consequential decisions without a human. All used it to **assist** humans — providing information, surfacing sources, accelerating lookup — with humans making the final call. This is the right risk posture for high-stakes domains.
+
+### Lesson 4: Evaluation before scaling
+
+Teams that skipped building a golden dataset before launch consistently spent more time on post-launch firefighting than teams that invested 2 weeks in eval infrastructure upfront. **Eval infrastructure pays itself back within weeks.**
+
+### Lesson 5: Users trust the system more than it deserves
+
+Agent trust (DoorDash), end-user over-reliance (multiple e-commerce cases), and executive confidence in dashboard numbers without understanding retrieval quality — all documented. **Build UX that calibrates trust**: show sources, show confidence, show "I don't know" gracefully.
+
+---
+
+## Where RAG Works Best
+
+Synthesizing from production deployments:
+
+| Domain | Why RAG works well | What to watch |
+|--------|-------------------|---------------|
+| Internal knowledge assistants | Well-scoped corpus, controlled updates | Freshness, ACL |
+| Customer support | High query volume = cache value, finite policy space | Answer staleness |
+| Technical documentation | Dense, specific, benefits from hybrid | Code block parsing |
+| Legal / compliance | Citation is non-negotiable | Grounding, ACL |
+| E-learning (content match) | User context + semantic matching | Level/prereq filtering |
+| Healthcare Q&A | High accuracy need | PHI, hallucination, human review |
+
+---
+
+## Where RAG Struggles
+
+| Domain | Why it struggles |
+|--------|----------------|
+| Real-time data | Can't answer "current price of AAPL" from a static index |
+| Highly numerical / analytical | Aggregations need SQL, not retrieval (Blog 8) |
+| Creative / synthesis beyond docs | RAG grounds to what exists; creative generation needs fine-tuning |
+| Pure chitchat | Retrieval adds latency and cost with no benefit; direct LLM is better |
+
+---
+
+## Putting It All Together — The Full RAG Checklist
+
+After 14 blogs, here's the production-readiness checklist:
+
+**Indexing:**
+- [ ] Appropriate parser per document type (Blog 3)
+- [ ] Chunking strategy matches query pattern (Blog 4)
+- [ ] Embedding model chosen for domain, tested (Blog 5)
+- [ ] Incremental indexing with freshness tracking (Blog 13)
+- [ ] ACL metadata attached at ingest (Blog 13)
+- [ ] PII/PHI handled at ingest (Blog 13)
+- [ ] Duplicate detection (Blog 3)
+
+**Retrieval:**
+- [ ] Hybrid search (dense + sparse) enabled (Blog 6)
+- [ ] Metadata filtering enforced (Blog 6, Blog 8)
+- [ ] Two-stage retrieve+re-rank (Blog 9)
+- [ ] Query translation where needed (Blog 7)
+- [ ] Routing to correct store/strategy (Blog 8)
+- [ ] Active retrieval grading (CRAG) for critical paths (Blog 11)
+
+**Generation:**
+- [ ] Grounding instruction in system prompt (Blog 10)
+- [ ] Per-claim citations (Blog 10)
+- [ ] Abstention path designed (Blog 10)
+- [ ] Prompt injection defense (Blog 10)
+- [ ] NLI or LLM-as-judge grounding check (Blog 10)
+
+**Evaluation:**
+- [ ] Golden dataset (>20 hand-curated QA pairs) (Blog 12)
+- [ ] RAGAS metrics: faithfulness, relevancy, precision/recall (Blog 12)
+- [ ] Eval in CI on every PR (Blog 12)
+- [ ] Traces per request (LangSmith/Langfuse) (Blog 12, 13)
+
+**Operations:**
+- [ ] Semantic cache (Blog 13)
+- [ ] Streaming enabled for frontend (Blog 13)
+- [ ] Circuit breaker / fallback model (Blog 13)
+- [ ] Latency and faithfulness alerts (Blog 13)
+- [ ] Index versioning (Blog 13)
+
+---
+
+## Final Thoughts
+
+RAG is a tool, not a destination. It works well when:
+- The answer lives in a bounded, maintainable corpus
+- Users need to trust and verify answers
+- You invest in retrieval quality (not just generation model quality)
+- You evaluate faithfully and continuously
+
+It fails when treated as:
+- A plug-and-play solution with no operational investment
+- A replacement for proper structured data systems (SQL, graphs)
+- A magic answer machine that's always right
+
+The gap between "a RAG prototype that sometimes works" and "a RAG system users trust" is entirely closed by the operational and evaluation discipline covered across this series.
+
+**Good luck building.**
+
+---
+
+**[← Back to Blog Series Index](/blog)**
+
+**Resources from this series:**
+- [LangChain RAG from scratch (GitHub)](https://github.com/langchain-ai/rag-from-scratch)
+- [RAGAS evaluation framework](https://docs.ragas.io/)
+- [LangGraph for agentic RAG](https://langchain-ai.github.io/langgraph/)
+- [Cohere enterprise RAG guide](https://docs.cohere.com/docs/retrieval-augmented-generation-rag)
+- [DeepEval for CI testing](https://docs.confident-ai.com/)
+- [LangSmith observability](https://docs.smith.langchain.com/)
+- [Microsoft GraphRAG](https://github.com/microsoft/graphrag)

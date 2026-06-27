@@ -1,0 +1,193 @@
+---
+title: "Blog 2: Tracing a Question Through a RAG System End-to-End"
+date: "2026-06-11"
+excerpt: "Follow a single query through every stage of a production RAG pipeline — from the moment a user types until they read a grounded, cited answer."
+tags: ["rag", "foundations", "pipeline", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 2
+---
+
+# Tracing a Question Through a RAG System End-to-End
+
+This is **Blog 2** in the [RAG series](/blog). This short chapter does one thing: it follows a single question through an entire production RAG system, naming every component as we pass it. By the end you'll have the vocabulary used in the rest of the series, and a concrete picture of where each later blog plugs in.
+
+---
+
+## The Setup: What Happened Offline
+
+Before any user shows up, the **indexing pipeline** has already run:
+
+1. A **loader** pulled documents from their sources — file shares, Confluence, S3 PDFs, databases.
+2. A **parser** turned each raw file into clean text — extracting text from PDFs, running OCR on scanned pages, pulling tables into structured form. *(Blog 3 — this is where most quality is won or lost.)*
+3. A **chunker** split that text into bite-sized pieces — each small enough to embed cleanly but large enough to carry meaning. *(Blog 4)*
+4. An **embedding model** converted each chunk into a vector — a list of, say, 1024 numbers that encodes the chunk's meaning. *(Blog 5)*
+5. Each vector, plus its **metadata** (source file, date, author, section, link back to the original) and often the chunk's text itself, was stored in a **vector store** with an ANN index built over the vectors for fast search. *(Blog 6)*
+
+The result: a searchable space where every chunk of your knowledge sits as a point positioned by meaning, tagged with where it came from.
+
+## The Question Arrives
+
+Now a user types: *"What's our refund policy for damaged electronics shipped to Indonesia?"*
+
+Here's its journey through the runtime pipeline.
+
+---
+
+### Step 1 — Query Translation *(Blog 7)*
+
+The raw question may not be ideal for retrieval. A query-translation layer might:
+
+- Rewrite it into several variants to widen the net (**multi-query**)
+- Generate a hypothetical answer to embed instead (**HyDE**)
+- Break a multi-part question into sub-questions (**decomposition**)
+
+**Goal:** bridge the gap between how the user phrased it and how the source documents are written.
+
+---
+
+### Step 2 — Routing *(Blog 8)*
+
+A router decides **where to send the question**:
+
+- Is this answerable from policy documents (vector store)?
+- Or is it a structured lookup ("how many refunds did we issue in Indonesia last month?") that should go to SQL?
+- Or does it need a graph traversal?
+
+For our question — it's policy text → vector store. But the system *chose*; routing is the fork.
+
+---
+
+### Step 3 — Query Construction *(Blog 8)*
+
+Because the question has a hard constraint ("Indonesia"), a **self-query retriever** might split it into:
+
+```
+Semantic: "refund policy for damaged electronics"  →  vector search
+Filter:   country = "Indonesia"                    →  metadata filter
+```
+
+This is where natural language becomes a structured query, so hard constraints aren't silently ignored.
+
+---
+
+### Step 4 — Retrieval *(Blog 9)*
+
+The (possibly rewritten, possibly filtered) query is embedded with the **same model from indexing**, and the vector store's ANN index returns the top-k nearest chunks — say the 20 closest by cosine similarity.
+
+**This stage optimizes for recall:** make sure the right chunk is *somewhere* in the set.
+
+---
+
+### Step 5 — Re-ranking *(Blog 9)*
+
+Those 20 rough candidates are passed to a **re-ranker** — typically a cross-encoder that scores each chunk against the query far more accurately than the initial vector search could. It reorders them and keeps the best few.
+
+**This stage optimizes for precision:** get the genuinely best chunks to the top, in the right order.
+
+---
+
+### Step 6 — (Optional) Compression / Grading *(Blogs 9, 11)*
+
+The system may:
+- **Compress** the retrieved chunks (strip them to only the sentences relevant to the query) to save context-window space
+- **Grade** them for relevance (CRAG-style): if the chunks don't look relevant, re-retrieve from a different source rather than answer from bad context
+
+---
+
+### Step 7 — Generation *(Blog 10)*
+
+The surviving chunks are assembled into a prompt:
+
+```
+System: Answer using ONLY the context below. Cite your sources.
+        If the answer isn't present, say you don't know.
+
+Context:
+[chunk 1, source: policy-indonesia.pdf §4.2]
+[chunk 2, source: returns-guide.pdf §1.1]
+...
+
+Question: What's our refund policy for damaged electronics shipped to Indonesia?
+```
+
+The LLM generates a grounded, cited answer.
+
+---
+
+### Step 8 — Grounding Check / Self-Correction *(Blogs 10, 11)*
+
+A production system may verify the answer is grounded — that every claim traces to a retrieved chunk — before returning it. If not (low faithfulness), it can regenerate, retrieve more, or escalate.
+
+---
+
+### Step 9 — The Answer
+
+The user gets a grounded answer with citations linking back to the source policy documents. The whole interaction is traced (logged for observability) and may later be scored by an evaluation harness *(Blog 12)*.
+
+---
+
+## The Two Halves, Restated
+
+```
+OFFLINE (indexing)
+load → parse → chunk → embed → store
+Sets the quality ceiling for everything downstream.
+
+ONLINE (per query)
+translate → route → construct → retrieve → re-rank → compress/grade → generate → ground-check
+Runs on every question, under a latency budget.
+```
+
+**A huge fraction of real-world RAG failures trace back to the offline half** — bad parsing, bad chunking — even though they manifest as bad answers in the online half. When debugging, always ask:
+
+1. Is this a **retrieval** problem or a **generation** problem?
+2. If retrieval, is it an **indexing** problem (parse/chunk)?
+
+The bug is usually further upstream than it appears.
+
+## The Vocabulary You Need
+
+Lock these terms — they recur constantly in every blog that follows:
+
+| Term | Definition |
+|------|-----------|
+| **Chunk** | A small piece of a document — the unit you embed and retrieve |
+| **Embedding** | A vector (list of numbers) representing a chunk's meaning |
+| **Vector store / vector DB** | The database that holds embeddings and finds nearest ones fast |
+| **ANN** | Approximate Nearest Neighbor — the fast (approximate) search method vector DBs use |
+| **top-k** | The k most similar chunks retrieved for a query |
+| **Cosine similarity** | The usual measure of how "close" two vectors are (angle between them) |
+| **Metadata** | Structured tags on a chunk (source, date, author, type) used for filtering |
+| **Re-ranker** | A second-stage model that reorders retrieved candidates by true relevance |
+| **Recall vs precision** | Recall = did we retrieve the right chunk at all; precision = are the top results the best ones |
+| **Grounding / faithfulness** | Whether the generated answer is supported by the retrieved context |
+| **Provenance / citations** | Links from answer claims back to source documents |
+
+## Debugging Order
+
+When a RAG system gives a wrong answer, the mental order is:
+
+```
+Wrong answer
+    │
+    ├─ Was the right chunk retrieved?
+    │       │
+    │       ├─ YES → generation/grounding problem
+    │       │         (Blog 10)
+    │       │
+    │       └─ NO  → retrieval problem
+    │                   │
+    │                   └─ Was it even indexed correctly?
+    │                       (Blog 3 — parsing, Blog 4 — chunking)
+    │
+    └─ Root cause is usually upstream of where the failure shows
+```
+
+---
+
+**Next:** [Blog 3 — Document Ingestion & Parsing — Where RAG Really Lives or Dies](/blog/rag-03-ingestion-parsing)
+
+**Resources:**
+- [LangChain RAG from scratch (GitHub)](https://github.com/langchain-ai/rag-from-scratch)
+- [LangChain LCEL docs](https://python.langchain.com/docs/concepts/lcel/)
+- [LlamaIndex pipeline overview](https://docs.llamaindex.ai/en/stable/module_guides/querying/pipeline/)

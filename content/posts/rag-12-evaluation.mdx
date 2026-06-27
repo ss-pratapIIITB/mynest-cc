@@ -1,0 +1,409 @@
+---
+title: "Blog 12: Evaluation — Measuring Whether Your RAG Actually Works"
+date: "2026-06-21"
+excerpt: "You can't improve what you don't measure. RAG evaluation is a discipline in itself: building golden datasets, choosing metrics for retrieval and generation, running LLM-as-judge, and catching regressions before they ship."
+tags: ["rag", "evaluation", "ragas", "llm-judge", "testing", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 12
+---
+
+# Evaluation — Measuring Whether Your RAG Actually Works
+
+This is **Blog 12** in the [RAG series](/blog).
+
+---
+
+## Why RAG Evaluation Is Hard
+
+With a classifier, you have labels — accuracy is a number. RAG has no such clean ground truth. The answer space is open, responses are natural language, and "right" has degrees.
+
+Standard tests don't help: unit tests check code, not whether the chunking strategy retrieves the right paragraph. Integration tests check plumbing, not whether the answer is faithful to the sources.
+
+You need a separate evaluation discipline. The good news: there's a structured framework.
+
+---
+
+## The Two Evaluation Dimensions
+
+RAG has two failure surfaces:
+
+```
+[Retrieval quality]     Did the system find the right chunks?
+[Generation quality]    Did the LLM faithfully use what it found?
+```
+
+And two axes to evaluate each:
+
+| Dimension | Focus |
+|-----------|-------|
+| **Faithfulness** | Does the answer only assert things supported by the context? |
+| **Relevance** | Is the answer (and retrieval) actually on-topic for the question? |
+| **Groundedness** | Are answer claims traceable to specific retrieved passages? |
+| **Correctness** | Does the answer match the factual ground truth? |
+
+The two main frameworks — **RAGAS** and **DeepEval** — operationalize these systematically.
+
+---
+
+## RAGAS — RAG-Specific Metrics
+
+[RAGAS](https://github.com/explodinggradients/ragas) (Retrieval Augmented Generation Assessment) is the most widely used framework. It provides four core metrics:
+
+```
+                     ┌─────────────────────────────────────────┐
+                     │              RAGAS Metrics               │
+                     ├─────────────────┬───────────────────────┤
+                     │ Context         │ Answer                │
+                     │ Precision       │ Faithfulness          │
+                     │ (retrieval)     │ (generation)          │
+                     ├─────────────────┼───────────────────────┤
+                     │ Context         │ Answer                │
+                     │ Recall          │ Relevancy             │
+                     │ (retrieval)     │ (generation)          │
+                     └─────────────────┴───────────────────────┘
+```
+
+### Context Precision
+Of the chunks retrieved, what fraction are actually relevant to the question? Measures retrieval **precision**.
+
+### Context Recall
+Of the ground-truth required information, how much did retrieval surface? Measures retrieval **recall**.
+
+### Faithfulness
+What fraction of the answer's claims are supported by the retrieved context? The anti-hallucination metric.
+
+### Answer Relevancy
+How on-topic is the answer for the question? (Penalizes verbose, off-topic, or incomplete answers.)
+
+```python
+from ragas import evaluate
+from ragas.metrics import (
+    faithfulness,
+    answer_relevancy,
+    context_precision,
+    context_recall,
+)
+from datasets import Dataset
+
+# Build test dataset
+test_data = {
+    "question": [
+        "What is the return window for electronics?",
+        "How do I apply for a refund?",
+    ],
+    "answer": [
+        "Electronics can be returned within 30 days.",
+        "You can apply via the customer portal or call support.",
+    ],
+    "contexts": [
+        ["Electronics: 30-day return window. Condition: unopened/defective only."],
+        ["Refund applications: visit portal.example.com or call 1-800-XXX."],
+    ],
+    "ground_truth": [
+        "Electronics have a 30-day return window for unopened or defective items.",
+        "Submit refund requests via the portal or by calling support.",
+    ],
+}
+
+dataset = Dataset.from_dict(test_data)
+
+# Evaluate
+results = evaluate(
+    dataset,
+    metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+)
+
+print(results)
+# → {'faithfulness': 0.95, 'answer_relevancy': 0.87, ...}
+```
+
+**Key resource:** [RAGAS docs](https://docs.ragas.io/)
+
+---
+
+## DeepEval — Granular and CI-friendly
+
+[DeepEval](https://github.com/confident-ai/deepeval) provides more granular metrics and is designed to fit into CI/CD pipelines like a test suite:
+
+```python
+import pytest
+from deepeval import assert_test
+from deepeval.test_case import LLMTestCase
+from deepeval.metrics import (
+    FaithfulnessMetric,
+    ContextualRelevancyMetric,
+    ContextualRecallMetric,
+    ContextualPrecisionMetric,
+    HallucinationMetric,
+    AnswerRelevancyMetric,
+    BiasMetric,
+    ToxicityMetric,
+)
+
+def test_rag_faithfulness():
+    test_case = LLMTestCase(
+        input="What is the return policy for electronics?",
+        actual_output="Electronics can be returned within 30 days.",
+        expected_output="Electronics have a 30-day return window.",
+        retrieval_context=[
+            "Return Policy: Electronics — 30-day window, unopened or defective only."
+        ],
+    )
+    
+    faithfulness = FaithfulnessMetric(
+        threshold=0.9,
+        model="gpt-4o",
+        include_reason=True,
+    )
+    
+    assert_test(test_case, [faithfulness])
+
+def test_rag_no_hallucination():
+    test_case = LLMTestCase(
+        input="What is the warranty on laptops?",
+        actual_output="Laptops come with a 2-year warranty.",
+        context=["Laptops: 1-year limited warranty."],
+    )
+    
+    hallucination = HallucinationMetric(threshold=0.1)
+    assert_test(test_case, [hallucination])
+```
+
+Run in CI:
+```bash
+deepeval test run test_rag_metrics.py
+```
+
+**Key resource:** [DeepEval docs](https://docs.confident-ai.com/)
+
+---
+
+## Building a Golden Dataset
+
+**Metrics are only as good as your test data.** The most important evaluation investment: a golden dataset of (question, answer, context, ground_truth) tuples.
+
+### Manual curation (best quality)
+Domain experts write questions they'd actually ask, and the correct answer with sources:
+
+```python
+golden_dataset = [
+    {
+        "question": "Can I return an opened electronic item?",
+        "ground_truth": "No. Only unopened or defective electronics are eligible for return.",
+        "source": "return-policy.pdf, Section 3.2",
+    },
+    # ... 50-200 items
+]
+```
+
+### LLM-generated (fast, needs review)
+
+```python
+from ragas.testset.generator import TestsetGenerator
+from ragas.testset.evolutions import simple, reasoning, multi_context
+
+generator = TestsetGenerator.with_openai()
+
+testset = generator.generate_with_langchain_docs(
+    documents=loaded_docs,
+    test_size=100,
+    distributions={
+        simple: 0.5,          # Direct factual questions
+        reasoning: 0.3,       # Multi-step reasoning
+        multi_context: 0.2,   # Questions spanning multiple chunks
+    },
+)
+```
+
+**Always review LLM-generated questions** — they will miss edge cases that matter in your domain and can over-sample "easy" questions. Use them as a scaffold, not a substitute.
+
+### The minimum viable golden dataset
+
+20–50 hand-curated questions covering:
+- Simple factual lookup
+- Multi-hop reasoning
+- Edge cases specific to your domain
+- Known failure modes (date filters, entity names, policy boundaries)
+
+This beats 1000 auto-generated easy questions.
+
+---
+
+## LLM-as-Judge
+
+Where you don't have ground truth (e.g., evaluating writing quality or completeness), use an LLM as the judge:
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel
+
+class EvaluationResult(BaseModel):
+    score: float      # 0.0-1.0
+    reasoning: str
+    is_faithful: bool
+
+judge_prompt = ChatPromptTemplate.from_template("""
+You are an expert evaluator for RAG systems.
+
+Question: {question}
+Retrieved Context: {context}
+Generated Answer: {answer}
+
+Evaluate the answer on:
+1. Faithfulness (0-1): Does every claim have support in the context?
+2. Completeness (0-1): Does it answer all parts of the question?
+3. Conciseness (0-1): Is it appropriately concise?
+
+Respond in JSON:
+{{
+  "faithfulness": 0.0,
+  "completeness": 0.0,
+  "conciseness": 0.0,
+  "reasoning": "explanation",
+  "overall": 0.0
+}}
+""")
+
+judge_llm = ChatOpenAI(model="gpt-4o", temperature=0)  # Use a strong model for judging
+
+judge_chain = judge_prompt | judge_llm | JsonOutputParser()
+```
+
+**LLM-as-judge pitfalls:**
+- **Verbosity bias** — judges tend to prefer longer answers (counter with explicit conciseness instruction)
+- **Self-preference** — using the same model to judge its own outputs inflates scores; use a different model or provider
+- **Position bias** — when comparing two answers, put them in random order
+- **Calibration** — judge scores need mapping to human agreement; always sample-validate with human ratings before trusting
+
+---
+
+## Tracing & Observability with LangSmith
+
+For active systems, you need **per-request tracing** to diagnose failures, not just aggregate metrics.
+
+```python
+from langsmith import traceable
+
+@traceable(name="rag_pipeline")
+def rag_pipeline(question: str) -> str:
+    # Auto-traced by LangSmith
+    docs = retriever.invoke(question)
+    answer = generate(question, docs)
+    return answer
+
+# Or via environment variable:
+# LANGCHAIN_TRACING_V2=true
+# LANGCHAIN_API_KEY=...
+```
+
+LangSmith captures:
+- Full retrieval results (what was retrieved, in what order)
+- LLM inputs and outputs at each step
+- Latency breakdowns
+- Feedback annotation (humans can thumbs-up/down answers in the UI)
+
+**Alternative:** [Arize Phoenix](https://phoenix.arize.com/) (open-source), [Langfuse](https://langfuse.com/) (open-source, self-hostable), [Helicone](https://helicone.ai/)
+
+---
+
+## RAG Evaluation in CI/CD
+
+The goal: catch faithfulness regressions before they reach users.
+
+```yaml
+# .github/workflows/rag_eval.yml
+name: RAG Evaluation
+on: [pull_request]
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: pip install ragas deepeval langchain openai
+      
+      - name: Run RAG evaluation suite
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -m pytest tests/eval/ -v --tb=short
+      
+      - name: Fail if faithfulness < 0.85
+        run: python scripts/check_eval_thresholds.py
+```
+
+```python
+# scripts/check_eval_thresholds.py
+THRESHOLDS = {
+    "faithfulness": 0.85,
+    "answer_relevancy": 0.80,
+    "context_precision": 0.75,
+}
+
+results = load_latest_eval_results()
+
+for metric, threshold in THRESHOLDS.items():
+    score = results[metric]
+    if score < threshold:
+        print(f"FAIL: {metric}={score:.3f} < {threshold}")
+        sys.exit(1)
+    print(f"PASS: {metric}={score:.3f} >= {threshold}")
+```
+
+**A regression pipeline that runs on every PR is worth more than any single evaluation run.** It forces you to keep a golden dataset and prevents "feels better" changes from quietly breaking faithfulness.
+
+---
+
+## The Evaluation Failure Catalog
+
+1. **Evaluating only the happy path** — curating easy questions that the system already answers well; real users won't
+2. **Fully automated golden dataset** — LLM-generated questions with no human review; misses domain edge cases
+3. **No faithfulness check** — measuring answer quality without grounding check; can't distinguish correct facts from hallucinations
+4. **Self-judging** — using the same LLM to generate answers and judge them; inflated scores
+5. **Aggregate scores without traces** — knowing avg faithfulness = 0.8 without being able to diagnose which questions are failing
+6. **No CI integration** — running eval once at release time; regressions ship between releases
+7. **Context recall ignored** — measuring answer quality but not whether retrieval surfaced the right chunks; can't debug root cause
+8. **Threshold too low** — accepting faithfulness of 0.6 because "it's hard to do better"; sets the wrong baseline for improvement
+
+---
+
+## The Evaluation Stack
+
+| Layer | Tool | What it measures |
+|-------|------|-----------------|
+| **Metrics** | RAGAS | Faithfulness, relevancy, precision/recall |
+| **Test runner** | DeepEval + pytest | CI-friendly, per-test assertions |
+| **Tracing** | LangSmith / Langfuse | Per-request debugging, latency |
+| **Synthetic data** | RAGAS testset generator | Bulk question generation (review before use) |
+| **Human review** | LangSmith annotations | Ground truth validation, judge calibration |
+| **LLM judge** | GPT-4o / Claude | Open-ended quality when no ground truth |
+
+---
+
+## Summary
+
+| Concept | Key Point |
+|---------|-----------|
+| Two dimensions | Retrieval quality + Generation quality — evaluate both |
+| RAGAS | Faithfulness, answer relevancy, context precision/recall |
+| DeepEval | Same metrics + CI test runner; use like pytest |
+| Golden dataset | 20-50 hand-curated questions > 1000 LLM-generated easy ones |
+| LLM-as-judge | Use for open-ended quality; use a different model than the one you're judging |
+| Tracing | Per-request; LangSmith is the standard; Langfuse for self-hosted |
+| CI integration | Eval on every PR; hard thresholds; catch regressions before users do |
+
+> **You can't improve what you don't measure — and you can't catch what you don't test before it ships.**
+
+---
+
+**Next:** [Blog 13 — Production RAG — Cost, Latency, Safety, and Observability at Scale](/blog/rag-13-production)
+
+**Resources:**
+- [RAGAS docs](https://docs.ragas.io/)
+- [DeepEval docs](https://docs.confident-ai.com/)
+- [LangSmith docs](https://docs.smith.langchain.com/)
+- [Arize Phoenix](https://phoenix.arize.com/)
+- [Langfuse](https://langfuse.com/)
+- [Promptfoo for RAG eval](https://www.promptfoo.dev/docs/guides/rag-evaluation/)

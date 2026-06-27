@@ -1,0 +1,486 @@
+---
+title: "Blog 13: Production RAG — Cost, Latency, Safety, and Observability at Scale"
+date: "2026-06-22"
+excerpt: "Getting a RAG prototype to work is easy. Running it in production at scale — with acceptable cost, latency, safety, and observability — is the hard part. This blog covers the levers that matter."
+tags: ["rag", "production", "cost-optimization", "caching", "observability", "security", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 13
+---
+
+# Production RAG — Cost, Latency, Safety, and Observability at Scale
+
+This is **Blog 13** in the [RAG series](/blog).
+
+---
+
+## The Gap Between Prototype and Production
+
+A weekend RAG prototype and a production RAG system differ not in intelligence but in **operational discipline**. Production adds:
+
+- **Cost:** LLM tokens bill at scale; a sloppy retrieval strategy can 10× your cost
+- **Latency:** users tolerate 1–2s; naively chaining 5 LLM calls easily hits 10–15s
+- **Safety:** PII, PHI, and confidential documents can leak through retrieval
+- **Reliability:** document pipelines break; models have downtime; you need fallbacks
+- **Observability:** you can't fix what you can't see
+
+This blog covers the operational layer.
+
+---
+
+## Cost Levers
+
+Token cost is almost entirely a function of **context size** — what you send to the LLM on every query.
+
+```
+Total per-query cost ≈ (retrieved chunks × avg chunk size) × token price × QPS
+```
+
+The levers, in order of impact:
+
+### 1. Reduce retrieved context (highest impact)
+
+```python
+# Before: "let's be safe" retrieval
+retriever = vectorstore.as_retriever(search_kwargs={"k": 12})
+
+# After: good retrieval + re-rank
+retriever = ContextualCompressionRetriever(
+    base_compressor=reranker,
+    base_retriever=vectorstore.as_retriever(search_kwargs={"k": 20}),
+    # Returns top 3-5 after re-ranking
+)
+```
+
+Going from k=12 to k=5 (with better retrieval quality) cuts context cost by ~60% per query.
+
+### 2. Chunk size
+
+Larger chunks → more tokens per retrieved doc. Smaller chunks → more precise but may need more of them.
+
+```python
+# Measure average tokens sent to LLM per query
+from langchain.callbacks import get_openai_callback
+
+with get_openai_callback() as cb:
+    result = chain.invoke({"question": "What is the refund policy?"})
+
+print(f"Tokens used: {cb.total_tokens}")
+print(f"Prompt tokens: {cb.prompt_tokens}")
+print(f"Completion tokens: {cb.completion_tokens}")
+print(f"Cost: ${cb.total_cost:.4f}")
+```
+
+### 3. Model routing
+
+Not every query needs the top-tier model:
+
+```python
+def select_model(query: str, retrieved_docs: list) -> str:
+    """Select model based on query complexity."""
+    # Simple single-fact lookup → cheap model
+    if len(retrieved_docs) <= 2 and is_simple_factual(query):
+        return "gpt-4o-mini"
+    # Multi-doc synthesis or complex reasoning → stronger model
+    return "claude-sonnet-4-6"
+
+def is_simple_factual(query: str) -> bool:
+    """Heuristic: single short question, no conjunction."""
+    return len(query.split()) < 15 and "and" not in query.lower()
+```
+
+### 4. Semantic caching
+
+Cache answers by semantic similarity of the question:
+
+```python
+from langchain.cache import RedisSemanticCache
+from langchain_openai import OpenAIEmbeddings
+import langchain
+
+langchain.llm_cache = RedisSemanticCache(
+    redis_url="redis://localhost:6379",
+    embedding=OpenAIEmbeddings(),
+    score_threshold=0.95,  # How similar questions need to be to hit cache
+)
+
+# First call: hits LLM
+result1 = llm.invoke("What's the return policy for electronics?")
+
+# Second call (similar question): hits cache, $0 LLM cost
+result2 = llm.invoke("What is the electronics return window?")
+```
+
+**Cache hit rate in production is often 20–40%** for FAQ-style systems — meaningful cost reduction for near-zero complexity.
+
+### 5. Streaming
+
+Streaming doesn't reduce cost but **reduces perceived latency** dramatically by starting to display text while generation continues:
+
+```python
+from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+
+llm = ChatOpenAI(
+    model="gpt-4o",
+    streaming=True,
+    callbacks=[StreamingStdOutCallbackHandler()],
+)
+
+# In a web app, stream via Server-Sent Events
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+
+app = FastAPI()
+
+@app.get("/query")
+async def query(q: str):
+    async def stream_response():
+        async for chunk in chain.astream({"question": q}):
+            yield f"data: {chunk}\n\n"
+    
+    return StreamingResponse(stream_response(), media_type="text/event-stream")
+```
+
+---
+
+## Latency Levers
+
+RAG latency stacks:
+
+```
+embedding (query)     →  ~30-100ms
+ANN search            →  ~10-50ms
+re-ranking            →  ~100-500ms (cross-encoder) or ~50-100ms (API)
+LLM generation        →  ~500ms - 3s (TTFT) + streaming
+─────────────────────────────────────────────────────
+Total (serial)        →  ~700ms - 4s
+```
+
+### Parallelize where possible
+
+```python
+import asyncio
+from langchain_core.runnables import RunnableParallel
+
+# Parallel retrieval from multiple sources
+retrieval_parallel = RunnableParallel({
+    "vector_results": vector_retriever,
+    "sql_results": sql_retriever,
+})
+
+results = await retrieval_parallel.ainvoke({"question": "Top customers by volume?"})
+
+# Merge results
+combined = results["vector_results"] + results["sql_results"]
+```
+
+### Async throughout
+
+```python
+# Sync: sequential, blocks on each await
+docs = retriever.invoke(question)           # blocks
+answer = llm.invoke(prompt.format(docs))   # blocks
+
+# Async: frees event loop between awaits
+docs = await retriever.ainvoke(question)
+answer = await llm.ainvoke(prompt.format(docs))
+```
+
+Use `ainvoke`/`astream` throughout your chain to support async web frameworks (FastAPI, Starlette).
+
+### Latency budget by component
+
+| Component | Target | Flag if over |
+|-----------|--------|-------------|
+| Query embedding | <100ms | 200ms |
+| ANN search | <50ms | 100ms |
+| Re-ranking | <300ms | 500ms |
+| LLM (TTFT) | <1s | 2s |
+| Full pipeline | <2s | 4s |
+
+---
+
+## Safety — PII, PHI, and Access Control
+
+### PII/PHI Detection and Redaction
+
+```python
+import re
+from presidio_analyzer import AnalyzerEngine
+from presidio_anonymizer import AnonymizerEngine
+
+analyzer = AnalyzerEngine()
+anonymizer = AnonymizerEngine()
+
+def detect_pii(text: str) -> list:
+    """Detect PII in text before indexing or returning."""
+    results = analyzer.analyze(text=text, language="en")
+    return results
+
+def redact_pii(text: str) -> str:
+    """Redact detected PII."""
+    results = analyzer.analyze(text=text, language="en")
+    anonymized = anonymizer.anonymize(text=text, analyzer_results=results)
+    return anonymized.text
+
+# At indexing time: decide whether to redact or restrict
+def safe_chunk(text: str, sensitivity: str) -> str:
+    if sensitivity == "public":
+        return text
+    elif sensitivity == "internal":
+        return redact_pii(text)  # Index redacted version
+    else:
+        return ""  # Don't index confidential at all
+```
+
+**Microsoft Presidio** is the standard open-source PII library. It handles SSNs, emails, phone numbers, names, credit cards, medical record numbers, and more.
+
+### Access Control — The Most Underrated Safety Problem
+
+**Who can see what** is a data governance problem, not a retrieval problem — but RAG puts it under pressure.
+
+```python
+# Attach ACL metadata at indexing time
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client.models import Filter, FieldCondition, MatchAny
+
+def index_with_acl(doc, allowed_roles: list[str]):
+    """Index document with access control metadata."""
+    vectorstore.add_documents([doc], metadata={
+        "allowed_roles": allowed_roles,
+        "sensitivity": "restricted",
+    })
+
+# At retrieval time: enforce access control
+def retrieve_with_acl(question: str, user_roles: list[str]):
+    acl_filter = Filter(
+        must=[
+            FieldCondition(
+                key="allowed_roles",
+                match=MatchAny(any=user_roles),
+            )
+        ]
+    )
+    
+    return vectorstore.similarity_search(
+        question,
+        filter=acl_filter,
+        k=5,
+    )
+```
+
+**The failure mode:** indexing documents without ACL metadata, then retrieving without filters. A sales rep's query could surface executive-only financial data, HR records, or M&A documents. This isn't a RAG bug — it's a design omission.
+
+### Data Residency
+
+For GDPR, HIPAA, or sovereignty requirements:
+- EU user data must stay in EU regions
+- Health data must stay in HIPAA-compliant infrastructure
+- Use regional deployments: `us-east-1` for US, `eu-west-1` for EU
+- Metadata-filter on `region` at retrieval time
+- Cross-region retrieval requires explicit legal review
+
+---
+
+## Reliability & Fallbacks
+
+### Retry with exponential backoff
+
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+)
+async def call_llm_with_retry(prompt: str) -> str:
+    return await llm.ainvoke(prompt)
+```
+
+### Circuit breaker — switch to a fallback model
+
+```python
+async def call_with_fallback(question: str, context: str) -> str:
+    """Try primary model, fall back on failure."""
+    prompt = build_prompt(question, context)
+    
+    try:
+        return await primary_llm.ainvoke(prompt)  # e.g., Claude
+    except Exception as e:
+        print(f"Primary LLM failed: {e}. Using fallback.")
+        try:
+            return await fallback_llm.ainvoke(prompt)  # e.g., GPT-4o
+        except Exception as e2:
+            return "I'm unable to answer right now. Please try again later."
+```
+
+### Document pipeline reliability
+
+Ingestion pipelines fail silently in predictable ways:
+- Parser crashes on a malformed PDF → document never indexed, no alert
+- Embedding API rate limit → partial index, downstream silent failures
+- Schema changes in the vector DB → silent dimension mismatch
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def safe_ingest_document(file_path: str) -> bool:
+    """Ingest with error isolation and logging."""
+    try:
+        docs = parse_document(file_path)
+        chunks = chunk_documents(docs)
+        embeddings = embed_chunks(chunks)
+        vectorstore.add_documents(chunks)
+        logger.info(f"Ingested: {file_path} ({len(chunks)} chunks)")
+        return True
+    except ParseError as e:
+        logger.error(f"Parse failed: {file_path}: {e}")
+        # Alert, don't crash the whole pipeline
+        alert_slack(f"Ingestion failed: {file_path}")
+        return False
+    except EmbeddingError as e:
+        logger.error(f"Embedding failed: {file_path}: {e}")
+        return False
+```
+
+---
+
+## Observability
+
+### The Three Signals
+
+**Logs** — structured, per-request:
+
+```python
+import structlog
+
+log = structlog.get_logger()
+
+async def rag_query(question: str, user_id: str) -> str:
+    start = time.time()
+    
+    docs = await retriever.ainvoke(question)
+    answer = await generate(question, docs)
+    
+    log.info(
+        "rag_query",
+        user_id=user_id,
+        question_hash=hash(question),
+        retrieved_count=len(docs),
+        latency_ms=(time.time() - start) * 1000,
+        answer_length=len(answer),
+    )
+    
+    return answer
+```
+
+**Metrics** — aggregated, for alerting:
+
+```python
+from prometheus_client import Counter, Histogram
+
+rag_requests = Counter("rag_requests_total", "Total RAG requests", ["status"])
+rag_latency = Histogram("rag_latency_seconds", "RAG pipeline latency")
+rag_faithfulness = Histogram("rag_faithfulness_score", "Faithfulness score")
+retrieval_count = Histogram("retrieval_doc_count", "Documents retrieved per query")
+```
+
+**Traces** — distributed, for debugging individual requests. LangSmith, Langfuse, Arize Phoenix, Datadog APM.
+
+### What to Alert On
+
+| Alert | Condition | Why |
+|-------|-----------|-----|
+| P95 latency > 4s | 95th percentile pipeline latency | User experience |
+| Faithfulness < 0.8 | Rolling 1-hour avg | Hallucination spike |
+| Cache hit rate < 10% | Below expected baseline | Cache config issue |
+| Retrieval count = 0 | >1% of requests | Index or query bug |
+| Error rate > 2% | LLM or retrieval errors | Reliability issue |
+
+---
+
+## Versioning & Rollout
+
+### Version your index alongside your application
+
+```python
+# Tag the index with the software version
+vectorstore.create_collection(
+    name=f"documents_v{VERSION}",
+    metadata={"app_version": VERSION, "deployed_at": datetime.utcnow().isoformat()},
+)
+
+# Blue-green: run two indexes, switch atomically
+ACTIVE_INDEX = os.getenv("ACTIVE_INDEX", "documents_v2")
+```
+
+### Canary retrieval strategy changes
+
+When changing chunking, embedding model, or retrieval strategy:
+1. Build new index alongside old one
+2. Route 5% of traffic to new strategy
+3. Compare faithfulness and latency against baseline
+4. Ramp up or rollback based on metrics
+
+---
+
+## The Production Failure Catalog — Master List
+
+This list synthesizes all failure modes from Blogs 3–13 into a production incident checklist:
+
+**Ingestion:**
+1. Parser crashes silently — malformed PDF, no error handling, doc never indexed
+2. Chunk boundary errors — splits mid-sentence, mid-table, mid-code block
+3. Duplicate chunks — near-duplicates inflate retrieval noise
+4. Missing metadata — no ACL, date, region; can't filter at query time
+
+**Retrieval:**
+5. k too small — right chunk never in candidate set
+6. k too large, no re-ranker — prompt flooded, attention diluted
+7. No hybrid search — exact-match terms (error codes, IDs) missed
+8. ACL not enforced — confidential docs surface for unauthorized users
+9. No active retrieval — bad retrieval produces hallucinated answer silently
+
+**Generation:**
+10. No grounding instruction — model uses prior knowledge, ignores context
+11. No abstention — "I don't know" path not designed; confident hallucination
+12. Context stuffing — too many chunks, top cost driver
+13. Prompt injection — malicious chunk contains model instructions
+14. No citations — answer not auditable or verifiable
+
+**Operational:**
+15. No eval in CI — regressions ship without detection
+16. No traces per request — can't debug production failures
+17. No PII/PHI redaction — sensitive data surfaces in retrieval or answer
+18. No semantic cache — duplicate queries pay full LLM cost every time
+19. Serial async — 4 LLM calls that could be parallel run sequentially; 4× latency
+20. No circuit breaker — one model outage takes down the whole system
+
+---
+
+## Summary
+
+| Problem | Solution |
+|---------|---------|
+| High cost | Reduce k, compress context, route cheaply, semantic cache |
+| High latency | Parallelize, async throughout, stream, cache |
+| PII/PHI leak | Detect and redact at ingest; don't index what shouldn't be indexed |
+| Access control | ACL metadata at ingest; filter enforced at retrieval — not optional |
+| Reliability | Retry with backoff, fallback models, error-isolated ingestion pipeline |
+| Observability | Structured logs, metrics (prometheus), traces (LangSmith/Langfuse) |
+| Cost visibility | Token callback on every chain, metric dashboards, cost attribution by query type |
+
+> **Production RAG is an operational discipline as much as an ML one.**
+
+---
+
+**Next:** [Blog 14 — Real-World RAG — Case Studies from DoorDash, LinkedIn, and Others](/blog/rag-14-case-studies)
+
+**Resources:**
+- [Microsoft Presidio (PII)](https://microsoft.github.io/presidio/)
+- [LangSmith observability](https://docs.smith.langchain.com/)
+- [Langfuse (open-source tracing)](https://langfuse.com/)
+- [Semantic caching with Redis](https://python.langchain.com/docs/integrations/llm_caching/)
+- [LangChain streaming](https://python.langchain.com/docs/how_to/streaming/)
+- [RAGAS production guide](https://docs.ragas.io/en/latest/getstarted/evaluation.html)

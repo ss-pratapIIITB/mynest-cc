@@ -1,0 +1,298 @@
+---
+title: "Blog 9: Retrieval & Re-ranking — Wide Net, Precise Cut"
+date: "2026-06-18"
+excerpt: "Naive top-k retrieval is fast but crude. Production RAG uses a two-stage pattern: retrieve wide with a bi-encoder for recall, then re-rank precise with a cross-encoder. Here's why and how."
+tags: ["rag", "retrieval", "re-ranking", "cross-encoder", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 9
+---
+
+# Retrieval & Re-ranking — Wide Net, Precise Cut
+
+This is **Blog 9** in the [RAG series](/blog).
+
+---
+
+## The Problem With Naive top-k
+
+Basic retrieval is: embed the query, drop it into the vector space, pull the top-k nearest chunks by cosine similarity. That's the baseline — and in production it's usually not good enough.
+
+The raw top-k from an ANN search is **fast but crude**: it's a single pooled-vector comparison, so results come back roughly relevant, often in the wrong order, sometimes padded with near-misses. Feeding all that to the LLM hurts — wrong-order docs get less attention, irrelevant ones distract, and you waste context window.
+
+---
+
+## The Core Production Pattern: Wide → Precise
+
+The single most important production retrieval technique:
+
+```
+Question
+    ↓
+[Stage 1] vector/hybrid search → ~20–50 rough candidates
+          Fast, high recall
+          (ANN bi-encoder)
+    ↓
+[Stage 2] RE-RANKER → top 3–5 precise candidates
+          Slow, high precision
+          (cross-encoder)
+    ↓
+LLM
+```
+
+- **Stage 1 — retrieve wide:** pull a generous top-k (20–50) cheaply with ANN (and ideally hybrid dense+sparse). Optimize for **recall** — make sure the right chunk is *somewhere* in the set.
+- **Stage 2 — re-rank precise:** run those candidates through a heavier, more accurate model that scores each against the query, then keep the top few. Optimize for **precision** — get the genuinely best chunks to the top, in order.
+
+You cast a wide cheap net, then judge precisely.
+
+---
+
+## Bi-Encoder vs Cross-Encoder — The Key Distinction
+
+| | Bi-encoder | Cross-encoder |
+|--|------------|---------------|
+| **How** | Embeds query and doc **separately**, compares vectors | Feeds query **and** doc together into one model; attention crosses both |
+| **Accuracy** | Moderate — query and doc never "see" each other | High — direct relevance judgment |
+| **Speed** | Fast — document embeddings precomputed | Slow — can't precompute, processes every pair |
+| **Scale** | Can handle millions of docs | Only feasible on a shortlist (~20–50) |
+| **Role** | First-stage recall | Second-stage precision |
+
+**The one-liner:** bi-encoder for recall (cheap, over everything), cross-encoder for precision (expensive, over the shortlist).
+
+---
+
+## Re-ranker Options
+
+```python
+# Cohere Rerank (managed API — popular production choice)
+from langchain_cohere import CohereRerank
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+
+reranker = CohereRerank(
+    model="rerank-english-v3.0",
+    top_n=5,
+)
+
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=reranker,
+    base_retriever=vectorstore.as_retriever(search_kwargs={"k": 20}),
+)
+
+# Automatically retrieves 20, re-ranks, returns top 5
+results = compression_retriever.invoke("What's the refund policy?")
+```
+
+```python
+# Open-source cross-encoder (self-hostable, no API costs)
+from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
+model = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-v2-m3")
+
+reranker = CrossEncoderReranker(model=model, top_n=5)
+
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=reranker,
+    base_retriever=vectorstore.as_retriever(search_kwargs={"k": 20}),
+)
+```
+
+```python
+# RankGPT / LLM-as-reranker (flexible, no extra model to host)
+from langchain.retrievers.document_compressors import LLMChainExtractor
+
+# Ask an LLM to reorder candidates by relevance
+# Flexible, but slower/pricier per query than dedicated rerankers
+```
+
+**Re-ranker options summary:**
+- **Cohere Rerank** — managed API, strong, popular
+- **BGE-reranker**, Jina reranker, Voyage rerank, mixedbread — open-source cross-encoders
+- **RankGPT** — LLM-as-reranker, flexible, more expensive
+- **RAG-Fusion / RRF** — fusion-based, lightweight, no extra model (Blog 7)
+
+---
+
+## Compression & Refinement
+
+After ranking, you can **compress** the retrieved chunks — extract only the sentences actually relevant to the query before passing to the LLM:
+
+```python
+from langchain.retrievers.document_compressors import LLMChainExtractor
+
+compressor = LLMChainExtractor.from_llm(llm)
+
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=compressor,
+    base_retriever=vectorstore.as_retriever(),
+)
+
+# Returns only the relevant sentences from each chunk
+compressed_docs = compression_retriever.invoke("What's the Indonesia refund policy?")
+```
+
+**Tradeoff:** saves context-window space and cuts distraction, but adds another LLM call, and aggressive compression can drop needed context. Measure it.
+
+---
+
+## "Lost in the Middle" — Order Matters
+
+LLMs attend less to the middle of long contexts. Important chunks buried mid-prompt get **under-weighted**.
+
+```python
+# Put the most relevant chunks at the start and end, not the middle
+# Re-ranking helps, but also be deliberate about prompt ordering
+
+def order_for_attention(docs):
+    """Put most relevant first and last, least relevant in the middle."""
+    if len(docs) <= 2:
+        return docs
+    
+    # Assume docs are already ranked by relevance (index 0 = best)
+    # Sandwich the least relevant in the middle
+    result = []
+    result.append(docs[0])       # Most relevant: first
+    result.extend(docs[2:])      # Medium: middle
+    result.append(docs[1])       # Second-most relevant: last
+    return result
+```
+
+[Lost in the Middle (Liu et al., 2023)](https://arxiv.org/abs/2307.03172) demonstrated this empirically. **Mitigate by re-ranking well and retrieving fewer, better chunks** rather than more.
+
+---
+
+## Active Retrieval — What Happens When Retrieval Fails
+
+Everything above assumes the retrieved docs are usable. But what if they're all bad — the answer isn't in your corpus?
+
+A naive pipeline shrugs and feeds garbage to the LLM, which hallucinates. **Active retrieval** adds the missing step: check the docs, and if they're bad, do something about it.
+
+**CRAG (Corrective RAG)** is the headline example (full treatment in Blog 11):
+
+```python
+from typing import TypedDict, List
+from langchain_core.documents import Document
+
+class GraphState(TypedDict):
+    question: str
+    documents: List[Document]
+    generation: str
+
+def grade_documents(state):
+    """Grade retrieved documents for relevance."""
+    question = state["question"]
+    documents = state["documents"]
+    
+    grading_prompt = """You are a relevance grader.
+    Document: {document}
+    Question: {question}
+    
+    Is this document relevant? Answer 'yes' or 'no'."""
+    
+    relevant_docs = []
+    needs_web_search = False
+    
+    for doc in documents:
+        score = llm.invoke(grading_prompt.format(
+            document=doc.page_content,
+            question=question
+        ))
+        if "yes" in score.content.lower():
+            relevant_docs.append(doc)
+        else:
+            needs_web_search = True
+    
+    return {
+        "documents": relevant_docs,
+        "needs_web_search": needs_web_search,
+    }
+
+# If needs_web_search: retrieve from web and use those instead
+```
+
+---
+
+## The Retrieval Failure Catalog
+
+1. **Trusting raw top-k** — no re-ranker, wrong-order and near-miss chunks reach the LLM
+2. **k too small** — the right chunk never makes the candidate set; no re-ranker can fix what wasn't retrieved
+3. **k too large without re-rank** — prompt flooded with marginally-relevant chunks, diluting attention and raising cost
+4. **Lost in the middle** — important chunks buried mid-prompt get under-weighted
+5. **No hybrid** — exact-match terms (codes, names) missed by pure dense retrieval
+6. **Over-retrieval as insurance** — teams retrieve k=12 "to be safe" and pay the cost on every query; usually k=5–6 with good retrieval+re-rank suffices
+7. **No active retrieval** — bad/empty retrieval still produces a confident hallucinated answer
+8. **Duplicate-dominated results** — near-duplicate chunks fill the top-k (dedup at ingestion, Blog 3)
+
+---
+
+## Complete Two-Stage Retrieval Pipeline
+
+```python
+from langchain_qdrant import QdrantVectorStore
+from langchain_openai import OpenAIEmbeddings
+from langchain_cohere import CohereRerank
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+
+# Stage 1: Wide recall with hybrid search
+vectorstore = QdrantVectorStore.from_existing_collection(
+    embedding=OpenAIEmbeddings(),
+    collection_name="documents",
+    url="http://localhost:6333",
+)
+
+base_retriever = vectorstore.as_retriever(
+    search_type="similarity",
+    search_kwargs={"k": 20},  # Wide net
+)
+
+# Stage 2: Precise re-ranking
+reranker = CohereRerank(model="rerank-english-v3.0", top_n=5)
+
+retriever = ContextualCompressionRetriever(
+    base_compressor=reranker,
+    base_retriever=base_retriever,
+)
+
+# Use in your RAG chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+
+prompt = ChatPromptTemplate.from_template("""
+Answer using ONLY the context below. Cite your sources.
+If the answer isn't present, say so.
+
+Context: {context}
+Question: {question}
+""")
+
+chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt
+    | llm
+)
+```
+
+---
+
+## Summary
+
+| Concept | Key Point |
+|---------|-----------|
+| Two-stage pattern | Retrieve wide (recall) → re-rank precise (precision). Always. |
+| Bi-encoder | Separate embeddings, fast, first stage, recall-optimized |
+| Cross-encoder | Query+doc together, accurate, second stage, precision-optimized |
+| Re-ranker options | Cohere Rerank, BGE-reranker, RankGPT, RRF (from Blog 7) |
+| Lost in the middle | Order matters — best chunks first/last |
+| Active retrieval | Grade chunks after retrieval; re-retrieve if bad (CRAG) |
+
+> **"Don't trust the first retrieval"** — re-rank (order), compress (content), CRAG (relevance).
+
+---
+
+**Next:** [Blog 10 — Grounding, Citations, and Taming Hallucination](/blog/rag-10-generation-grounding-citations)
+
+**Resources:**
+- [Cohere Rerank docs](https://docs.cohere.com/docs/rerank-2)
+- [BGE re-ranker (GitHub)](https://github.com/FlagOpen/FlagEmbedding/tree/master/FlagEmbedding/reranker)
+- [Lost in the Middle paper](https://arxiv.org/abs/2307.03172)
+- [LangChain Contextual Compression](https://python.langchain.com/docs/how_to/contextual_compression/)
+- [CRAG paper](https://arxiv.org/abs/2401.15884)

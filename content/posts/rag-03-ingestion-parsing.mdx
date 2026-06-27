@@ -1,0 +1,264 @@
+---
+title: "Blog 3: Document Ingestion & Parsing — Where RAG Really Lives or Dies"
+date: "2026-06-12"
+excerpt: "Parsing is the most important and least glamorous step in RAG. Bad parsing caps everything downstream. Here's what breaks, format by format, and how to handle it."
+tags: ["rag", "ingestion", "parsing", "pdf", "ocr", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 3
+---
+
+# Document Ingestion & Parsing — Where RAG Really Lives or Dies
+
+This is **Blog 3** in the [RAG series](/blog).
+
+> "When RAG fails, the problem is usually here — in the unglamorous data layer — not in the model." — Lance Martin
+
+The quality of your RAG system is capped by the quality of your parsing. A brilliant retrieval and generation stack on top of garbage-extracted text produces garbage answers.
+
+---
+
+## The Mental Model: Parsing is Lossy Translation
+
+Parsing is translating a visually/structurally rich artifact into linear text. Every translation step can:
+- **Lose information** (a table's row/column relationships)
+- **Inject noise** (OCR misreads, email signature boilerplate)
+- **Destroy structure** (merging two PDF columns into interleaved gibberish)
+
+Your job is to lose as little meaning as possible.
+
+---
+
+## The 2026 Parser Landscape
+
+The market split into two paradigms:
+
+| Paradigm | Approach | Tools | When to use |
+|----------|----------|-------|-------------|
+| **Rule-based / heuristic** | Fast, cheap, deterministic, format-specific | Unstructured, Apache Tika, PyMuPDF4LLM | Clean, standard documents |
+| **Vision-language / LLM-powered** | Looks at the page like a human, understands layout | LlamaParse, Docling, Mistral OCR | Complex PDFs with tables/charts |
+
+### Tools worth knowing
+
+- **[Unstructured](https://github.com/Unstructured-IO/unstructured)** — broad open-source workhorse. Converts PDFs, DOCX, PPTX, HTML and 30+ formats. Has commercial API fallback. Note: some practitioners report quality has dropped over time — benchmark on your own docs.
+- **[Docling (IBM Research)](https://github.com/DS4SD/docling)** — the open-source middle ground. Layout analysis + table structure recognition, best for self-hosted deployments needing layout awareness without vendor lock-in. Strong for data residency requirements.
+- **[LlamaParse (LlamaIndex)](https://docs.llamaindex.ai/en/stable/llama_cloud/llama_parse/)** — cleanest Markdown from visually complex docs. Cloud-based with API costs, no on-premises deployment path. Weaker on multi-column layouts and borderless tables.
+- **[PyMuPDF4LLM](https://github.com/pymupdf/PyMuPDF)** — fastest option for clean digital PDFs at high volume. Free, code-level.
+- **[Reducto](https://reducto.ai/)**, **Mistral OCR**, **Zerox** — newer vision parsers. Standout: some return confidence scores + word-level bounding boxes for every extracted field, so your pipeline knows *when to trust* an output.
+- **Cloud platforms** — AWS Textract, Azure AI Document Intelligence, Google Document AI. Best when you're already in that cloud ecosystem.
+
+**The selection rule:** there is no universal best parser. Benchmark candidate parsers on a sample of the *customer's actual documents* before committing — reputations mislead, your corpus decides.
+
+---
+
+## Document Type by Document Type — What Breaks and How
+
+### Digital (text-layer) PDFs
+
+**What goes wrong:**
+- Multi-column layouts get read in the wrong order — a naive extractor reads straight across the page, interleaving left and right columns into nonsense. This is the **single most common PDF failure**.
+- Headers, footers, and page numbers repeat on every page: `"Confidential — Page 12 of 80"` embedded mid-sentence.
+- Hyphenation at line breaks splits words: `"informa-\ntion"`.
+
+**How to handle:** Use a layout-aware parser (Docling, LlamaParse, PyMuPDF4LLM) that respects reading order. Strip repeating headers/footers. De-hyphenate. Output to Markdown to preserve heading hierarchy.
+
+---
+
+### Scanned / Image-Only PDFs
+
+**What goes wrong:**
+- Without OCR, there is literally nothing to extract. Naive parsers return empty or near-empty text. This is the **#1 silently-skipped step** — engineers index the corpus and never notice half of it produced no text.
+- OCR errors propagate: a misread digit in a dosage or contract amount becomes a wrong, confident answer.
+
+**How to handle:**
+
+```python
+# Detect image-only pages (no extractable text layer)
+import fitz  # PyMuPDF
+
+def is_image_only_page(page):
+    text = page.get_text()
+    return len(text.strip()) < 50  # heuristic
+
+doc = fitz.open("document.pdf")
+for i, page in enumerate(doc):
+    if is_image_only_page(page):
+        # Route to OCR pipeline
+        print(f"Page {i+1}: image-only, needs OCR")
+```
+
+Use Tesseract (open-source), cloud OCR (Textract, Azure DI), or vision-LLM parsers (Mistral OCR / LlamaParse). **Always:** OCR must run **before** PII/PHI redaction — OCR can surface sensitive text hidden inside an image.
+
+---
+
+### Tables
+
+Tables are notoriously the hardest format.
+
+**What goes wrong:**
+- Flattening destroys relationships. Naive extraction turns a table into a stream of cell values with no idea which value belongs to which row/column header. `"$4.2M"` is meaningless without `"Revenue / Q3 / Indonesia"`.
+- Merged cells, multi-row headers, nested tables break most parsers.
+- Even good vision parsers like LlamaParse are inconsistent on borderless or merged-cell tables.
+
+**How to handle (choose based on data):**
+
+```python
+# Option 1: Keep table as a unit with a text description
+# Embed the description, store the full structured table
+table_description = """
+Table: Quarterly revenue by region
+Columns: Q1 2025, Q2 2025, Q3 2025, Q4 2025
+Rows: Indonesia, Singapore, Malaysia, Thailand
+Unit: USD millions
+"""
+
+# Option 2: Extract to actual database and answer via SQL
+# (see Blog 8 on routing)
+```
+
+For financial-data customers: "your table questions are a SQL problem, not a RAG problem" is often the right call.
+
+---
+
+### Images, Charts, Diagrams
+
+**What goes wrong:** A pure-text pipeline ignores images entirely. A chart ("revenue grew 40%") carries data that never appears as text.
+
+**Three options of increasing power:**
+
+1. **OCR** the image for embedded text (screenshots, stack traces)
+2. **Vision-LLM captioning**: pass the image to a multimodal model, embed the generated description as text
+3. **Multimodal embeddings**: use a model that embeds images and text into a shared vector space (Google Gemini Embedding, Cohere embed-v4)
+
+For most teams, option 2 is the pragmatic default.
+
+```python
+from openai import OpenAI
+import base64
+
+client = OpenAI()
+
+def caption_image(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+    
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}},
+                {"type": "text", "text": "Describe this chart/diagram in detail for a search index."}
+            ]
+        }]
+    )
+    return response.choices[0].message.content
+```
+
+---
+
+### Emails (.eml / .msg)
+
+**What goes wrong:**
+- Quoted reply chains: a single email contains the entire thread quoted beneath it — massive duplication.
+- Signatures, disclaimers, legal boilerplate repeat endlessly and pollute embeddings.
+- PII everywhere — names, addresses, account numbers.
+
+**How to handle:** Parse into structured parts: extract From/To/Date/Subject as metadata, strip quoted reply chains (keep only new content), remove signature/disclaimer boilerplate, convert HTML to clean text, recurse into attachments. De-duplicate aggressively. Redact PII.
+
+---
+
+### Slack / Teams / Chat Threads
+
+The hardest text source — and often the highest-value institutional knowledge.
+
+**What goes wrong:** The unit of meaning is a **conversation**, not a single message. `"yeah, restart it"` is meaningless alone. Conversations sprawl across threads, interleave with unrelated chatter, and contain screenshots with the actual answers.
+
+**The senior answer — reconstruct conversations using:**
+1. Explicit thread structure (strongest signal)
+2. Temporal proximity (messages clustered in time)
+3. Participant overlap (same people back-and-forth)
+4. Topic continuity (semantic similarity between adjacent messages)
+
+Then: OCR attachments (screenshots of stack traces are gold), summarize each conversation (problem → discussion → resolution) and embed the summary while storing the full thread. **Tag resolved vs. unresolved** — a resolved thread is worth far more at retrieval.
+
+---
+
+### Wikis / Confluence / Notion
+
+**What goes wrong:**
+- Macros, embeds, dynamic content render as junk.
+- Stale content: wikis are notoriously out of date; indexing everything surfaces obsolete answers.
+- Permissions: different pages have different ACLs — indexing everything into one store can leak restricted content.
+
+**How to handle:** Use the platform's API (not HTML scraping). Preserve heading hierarchy. Capture permissions/ACLs as metadata so retrieval can filter by what the asking user is allowed to see. Weight by `last-updated` date.
+
+---
+
+### Code & Technical Docs
+
+**What goes wrong:** Splitting code by character count cuts functions in half.
+
+**How to handle:** Use syntax-aware splitting — split on function/class boundaries. Keep functions/classes intact with their signatures. For fast-changing code, consider a live tool/API call (e.g., GitHub code search) instead of a stale index.
+
+```python
+from langchain.text_splitter import Language, RecursiveCharacterTextSplitter
+
+python_splitter = RecursiveCharacterTextSplitter.from_language(
+    language=Language.PYTHON,
+    chunk_size=2000,
+    chunk_overlap=200
+)
+```
+
+---
+
+## Cross-Cutting Concerns
+
+Regardless of format, every ingestion pipeline must handle:
+
+| Concern | What it means |
+|---------|--------------|
+| **Metadata / provenance** | Every chunk carries: source id, link to original, document type, date, author, section breadcrumb, ACL tags |
+| **De-duplication** | Real corpora are full of duplicates — they waste storage, skew retrieval, inflate cost |
+| **PII / PHI handling** | Detect and redact before indexing, using self-hosted NER for data residency. **After OCR, not before.** |
+| **Quality gates** | Track extraction confidence; flag low-confidence docs for human review |
+| **Incremental re-indexing** | Detect changed/new/deleted docs and update without full rebuild |
+| **Idempotency & lineage** | Re-running ingestion shouldn't create duplicates; every chunk traceable to its source |
+
+---
+
+## The Ingestion Failure Catalog
+
+Memorize these — they're the bugs that actually bite:
+
+1. Silent OCR skips — image-only pages produce no text and nobody notices
+2. Multi-column interleaving — PDF columns read across, producing scrambled text
+3. Table flattening — row/column relationships destroyed; numbers become meaningless
+4. Boilerplate pollution — headers, footers, email signatures diluting embeddings
+5. Quoted-reply duplication — email/Slack content stored many times over
+6. Chunking through structure — splitting mid-table, mid-function, mid-sentence
+7. Lost images/charts — figure-only information silently dropped
+8. Stale content indexed as current — obsolete wiki pages answered with confidence
+9. PII leakage — sensitive data in a store without access control
+10. Permission bleed — restricted docs retrievable by unauthorized users
+11. Encoding/unicode corruption — ligatures, mojibake, missing spaces
+12. No provenance — chunks can't be traced to sources, citations impossible
+13. Treating structured data as text — embedding spreadsheet rows instead of querying them
+14. No quality gate — bad parses indexed silently, surfacing as inexplicable wrong answers
+
+---
+
+## Summary
+
+**Parsing quality caps the whole system.** When RAG gives wrong answers, look here first. The unglamorous ingestion work — OCR, de-duplication, PII redaction, permission capture, quality gates — is exactly the judgment that separates a demo from a production system.
+
+---
+
+**Next:** [Blog 4 — Chunking — The Most Underrated Decision in Your RAG Pipeline](/blog/rag-04-chunking)
+
+**Resources:**
+- [Unstructured open-source (GitHub)](https://github.com/Unstructured-IO/unstructured)
+- [Docling by IBM Research (GitHub)](https://github.com/DS4SD/docling)
+- [LangChain document loaders](https://python.langchain.com/docs/integrations/document_loaders/)
+- [LlamaParse docs](https://docs.llamaindex.ai/en/stable/llama_cloud/llama_parse/)
+- [PyMuPDF docs](https://pymupdf.readthedocs.io/en/latest/)

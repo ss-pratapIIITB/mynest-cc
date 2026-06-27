@@ -1,0 +1,292 @@
+---
+title: "Blog 8: Routing & Query Construction — When It's Not a Vector Problem"
+date: "2026-06-17"
+excerpt: "Most real company data lives in SQL warehouses and graph DBs, not just a pile of text. The senior insight: know when to embed and when to query. 'This is a SQL problem, not a vector problem' is one of the highest-value things you can say."
+tags: ["rag", "routing", "text-to-sql", "query-construction", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 8
+---
+
+# Routing & Query Construction — When It's Not a Vector Problem
+
+This is **Blog 8** in the [RAG series](/blog).
+
+---
+
+## The Plain-English Idea
+
+So far we've assumed the answer lives in unstructured text in a vector store. But most real company data isn't like that — it lives in structured and semi-structured stores: SQL warehouses, graph databases, and vector stores with metadata.
+
+You can't answer *"show me all invoices over $10k from Q3 2025 for the Indonesia entity"* with semantic similarity — that's not a meaning match, it's a filter (numbers, dates, exact categories). Embeddings are bad at this; databases are great at it.
+
+This chapter is two related ideas:
+- **Routing** decides where a question should go (which store / which prompt)
+- **Query construction** converts the natural-language question into the formal query language of the chosen store
+
+This is the most underrated, most enterprise-relevant part of RAG — and the place where the senior insight **"this isn't a vector problem"** lives.
+
+---
+
+## Routing
+
+### Logical Routing
+
+Let an LLM look at the question and pick the destination:
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
+from typing import Literal
+
+class RouteQuery(BaseModel):
+    """Route a user query to the most relevant datasource."""
+    datasource: Literal["vectorstore", "sql_database", "graph_database", "live_api"]
+
+structured_llm = ChatOpenAI(model="gpt-4o-mini").with_structured_output(RouteQuery)
+
+route_prompt = ChatPromptTemplate.from_messages([
+    ("system", """You are an expert at routing user questions.
+
+    Available data sources:
+    - vectorstore: policy documents, manuals, FAQs (unstructured text)
+    - sql_database: orders, invoices, customers, transactions (structured data)
+    - graph_database: organizational hierarchy, product relationships
+    - live_api: real-time inventory, current pricing
+
+    Route to the datasource that can best answer the question."""),
+    ("human", "{question}"),
+])
+
+router = route_prompt | structured_llm
+
+# Test it
+result = router.invoke({"question": "What were our top 5 expenses last month?"})
+# → RouteQuery(datasource='sql_database')
+
+result = router.invoke({"question": "What's the refund policy for electronics?"})
+# → RouteQuery(datasource='vectorstore')
+```
+
+### Semantic Routing
+
+Embed the question and route by similarity — choose among several specialized prompts/handlers by which one's embedding the question is closest to:
+
+```python
+from langchain_core.runnables import RunnableBranch
+
+# Embed example questions for each route
+sql_questions = ["total revenue", "count orders", "average by region"]
+vector_questions = ["what is the policy", "how do I", "explain the"]
+
+# At query time: compare question embedding to category embeddings
+# Route to closest category
+```
+
+### Intent Classification (the practical generalization)
+
+In a real multi-backend assistant, routing is **intent classification** into several lanes:
+
+```
+User query
+    │
+    ├─ Order status → live API call
+    ├─ Product spec → SQL (structured attribute lookup)
+    ├─ Product recommendation → vector/hybrid search
+    ├─ Policy question → document RAG
+    └─ Unknown → fallback / human handoff  ← always include this lane
+```
+
+---
+
+## Query Construction
+
+### Text-to-SQL (relational databases)
+
+Convert the question into a SQL query, run it, return rows:
+
+```python
+from langchain_community.utilities import SQLDatabase
+from langchain.chains import create_sql_query_chain
+from langchain_openai import ChatOpenAI
+
+db = SQLDatabase.from_uri("postgresql://user:pass@localhost/mydb")
+llm = ChatOpenAI(model="gpt-4o", temperature=0)
+
+# The chain injects the schema automatically
+chain = create_sql_query_chain(llm, db)
+
+query = chain.invoke({"question": "Total revenue from Indonesia clients last quarter"})
+# → "SELECT SUM(amount) FROM invoices WHERE region='ID' AND quarter='2025-Q1';"
+
+# Execute it
+result = db.run(query)
+```
+
+**Critical detail:** you must feed the LLM the database schema (tables, columns, types, sometimes example rows), or it hallucinates column names.
+
+**Guardrails — always include these:**
+
+```python
+from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
+
+# Read-only execution
+execute_query = QuerySQLDataBaseTool(db=db)
+
+# Validate before running
+def validate_query(query: str) -> str:
+    query = query.strip()
+    
+    # Reject writes
+    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE", "ALTER"]
+    for keyword in forbidden:
+        if keyword in query.upper():
+            raise ValueError(f"Write operations not allowed: {keyword}")
+    
+    # Add LIMIT if not present (prevent runaway queries)
+    if "LIMIT" not in query.upper():
+        query = query.rstrip(";") + " LIMIT 100;"
+    
+    return query
+```
+
+### Text-to-Cypher (graph databases)
+
+Same idea, target is a graph database (Neo4j), query language Cypher. Use when **relationships between entities** are the point:
+
+```python
+from langchain_neo4j import GraphCypherQAChain, Neo4jGraph
+
+graph = Neo4jGraph(url="bolt://localhost:7687", username="neo4j", password="password")
+
+chain = GraphCypherQAChain.from_llm(
+    ChatOpenAI(model="gpt-4o"),
+    graph=graph,
+    verbose=True,
+)
+
+result = chain.invoke({
+    "query": "Which suppliers connect to vendors who also serve our competitors?"
+})
+```
+
+### Self-Query Retriever (vector DB + metadata)
+
+The one most RAG systems actually need and skip. Each chunk has metadata (date, author, source, category, price, region). The self-query retriever uses the LLM to split the natural-language question into two parts:
+
+```
+"AI safety articles published after 2024 by Anthropic"
+    │ LLM splits into:
+    ├── semantic: "AI safety"  →  vector search
+    └── filter: date > 2024 AND author = "Anthropic"  →  exact filter
+```
+
+**Without this,** "after 2024" is silently ignored — embeddings don't encode "after 2024" as a comparable concept — and you get semantically-similar-but-wrong-year results.
+
+```python
+from langchain.retrievers.self_query.base import SelfQueryRetriever
+from langchain.chains.query_constructor.base import AttributeInfo
+
+metadata_field_info = [
+    AttributeInfo(
+        name="source",
+        description="The source document filename",
+        type="string",
+    ),
+    AttributeInfo(
+        name="date",
+        description="The date the document was published (YYYY-MM-DD)",
+        type="string",
+    ),
+    AttributeInfo(
+        name="author",
+        description="The author or organization",
+        type="string",
+    ),
+    AttributeInfo(
+        name="country",
+        description="The country this policy applies to",
+        type="string",
+    ),
+]
+
+retriever = SelfQueryRetriever.from_llm(
+    llm=ChatOpenAI(model="gpt-4o-mini"),
+    vectorstore=vectorstore,
+    document_contents="Policy documents and guides",
+    metadata_field_info=metadata_field_info,
+)
+
+# This will automatically extract the date filter
+results = retriever.invoke("AI safety articles published after 2024 by Anthropic")
+```
+
+---
+
+## The Senior Insight: "It's Not a Vector Problem"
+
+The mistake juniors make is reaching for embeddings reflexively. The test: ask **where the fact lives**.
+
+| Question | Looks like... | Actually is... |
+|----------|--------------|----------------|
+| "Is this pan induction-compatible?" | Vision/RAG problem | `SELECT induction_compatible FROM products WHERE sku=...` |
+| "What were our top 5 expenses last month?" | RAG problem | `SELECT SUM(amount) FROM transactions GROUP BY category ORDER BY total DESC LIMIT 5` |
+| "Which suppliers connect to competitors?" | Hard RAG problem | Graph traversal in Cypher |
+| "What's the refund policy?" | RAG problem | ✓ Actually a RAG problem |
+
+**"This is a SQL problem, not a vector problem"** is one of the highest-value sentences you can say when scoping a system.
+
+---
+
+## The Hard Risk: Correctness & Safety
+
+Generated SQL/Cypher can be:
+- **Wrong:** hallucinated column names, subtly bad joins giving plausible-but-incorrect numbers — dangerous in finance
+- **Unsafe:** an LLM emitting `DELETE`/`DROP`, or injection via user input
+
+Production query construction always includes guardrails:
+
+| Guardrail | Why |
+|-----------|-----|
+| Read-only credentials | Prevents writes even if the generated query tries |
+| Schema-constrained generation | Model can only reference real tables/columns |
+| Query validation / allow-listing | Parse SQL, reject writes, cap row counts with LIMIT |
+| Show user the generated query | Transparency and verification |
+| Sandboxing / timeouts | Prevent runaway queries |
+
+---
+
+## The Routing/Construction Failure Catalog
+
+1. Forcing structured questions into vector search — embedding rows/tables instead of querying
+2. Schema not provided — text-to-SQL hallucinates column/table names
+3. Silently dropped constraints — no self-query filter, so "after 2024" / "in Indonesia" is ignored
+4. No query guardrails — generated SQL runs with write access or no validation
+5. Plausible-but-wrong aggregations — a subtly bad join returns a confident wrong number
+6. Mis-routing — intent classifier sends question to wrong lane
+7. Over-reaching on capability — assuming a structured attribute needs vision/RAG when it's a DB column
+8. No fallback lane — questions outside known intents get a hallucinated answer instead of graceful handoff
+
+---
+
+## Summary
+
+| Concept | Key Point |
+|---------|-----------|
+| Routing | Logical (LLM picks store) or semantic (embedding similarity to route templates) |
+| Intent classification | Multiple lanes + a fallback/human lane — the spine of any multi-source assistant |
+| Text-to-SQL | Inject schema; read-only; validate generated query; add LIMIT; show to user |
+| Text-to-Cypher | For relationship traversal — the heart of GraphRAG (Blog 11) |
+| Self-query retriever | Split semantic + metadata filter so hard constraints aren't silently ignored |
+| The senior insight | Ask where the fact lives; match technique to data, not to what the question sounds like |
+
+---
+
+**Next:** [Blog 9 — Retrieval & Re-ranking — Wide Net, Precise Cut](/blog/rag-09-retrieval-reranking)
+
+**Resources:**
+- [LangChain text-to-SQL tutorial](https://python.langchain.com/docs/tutorials/sql_qa/)
+- [LangChain Self-Query Retriever](https://python.langchain.com/docs/how_to/self_query/)
+- [LangChain graph QA](https://python.langchain.com/docs/tutorials/graph/)
+- [LangChain RAG from scratch — Routing](https://github.com/langchain-ai/rag-from-scratch/blob/main/rag_from_scratch_10_and_11.ipynb)
+- [Neo4j GraphRAG Python package](https://github.com/neo4j/neo4j-graphrag-python)

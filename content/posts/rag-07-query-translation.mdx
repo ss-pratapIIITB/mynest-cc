@@ -1,0 +1,264 @@
+---
+title: "Blog 7: Query Translation — Fixing Bad Queries Before Retrieval"
+date: "2026-06-16"
+excerpt: "Most retrieval failures are query problems, not index problems. Query translation rewrites or expands the question before it hits the retriever, bridging the vocabulary gap between user and document."
+tags: ["rag", "query-translation", "retrieval", "hyde", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 7
+---
+
+# Query Translation — Fixing Bad Queries Before Retrieval
+
+This is **Blog 7** in the [RAG series](/blog).
+
+---
+
+## The Problem: Vocabulary Mismatch
+
+Retrieval lives or dies on whether the question's embedding lands near the right document's embedding. But users write bad queries for that purpose — too short, ambiguous, using different words than the source documents, or packing several questions into one.
+
+The classic failure is **vocabulary mismatch**: the user asks "how do I fix a crash on startup?" but the doc says "resolving boot-time exceptions." Semantically related, but the embeddings may not be close enough to retrieve.
+
+**Query translation** rewrites or expands the question before it hits the retriever to bridge that gap. It's the leftmost intervention in the pipeline — the first thing that touches the raw question.
+
+It splits into two families:
+- **Decompose/rephrase:** multi-query, RAG-Fusion, decomposition, step-back
+- **Pseudo-documents:** HyDE
+
+---
+
+## The Techniques
+
+### 1. Multi-Query
+
+Use an LLM to rewrite the question into several different phrasings, retrieve for each, then pool the unique results.
+
+```
+Question ──LLM──▶ 4 reworded variants ──▶ retrieve each ──▶ union of unique chunks ──▶ (re-rank) ──▶ LLM
+```
+
+```python
+from langchain.retrievers.multi_query import MultiQueryRetriever
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+retriever = MultiQueryRetriever.from_llm(
+    retriever=vectorstore.as_retriever(),
+    llm=llm,
+)
+
+# Automatically generates multiple query variants and unions the results
+results = retriever.get_relevant_documents(
+    "What's our policy for returning damaged electronics?"
+)
+```
+
+**Intuition:** one phrasing might miss; five phrasings cast a wider net across vocabulary, so the right doc surfaces for at least one variant.
+
+- **Pros:** cheap, robust workhorse for vocabulary mismatch
+- **Cons:** N embedding+retrieval passes plus one LLM call to generate variants
+- **Use:** the default fix for vocabulary mismatch
+
+---
+
+### 2. RAG-Fusion
+
+Multi-query plus a smarter merge. After retrieving for each variant, instead of a plain union you re-rank the combined results with **Reciprocal Rank Fusion (RRF)**:
+
+```
+score(doc) = Σ over queries [1 / (k + rank_of_doc_in_query)]
+```
+
+Documents that rank highly across **multiple** variants get boosted to the top — trusting consistency.
+
+```python
+from langchain.load import dumps, loads
+
+def reciprocal_rank_fusion(results: list[list], k=60):
+    """Fuse multiple ranked lists using RRF."""
+    fused_scores = {}
+    for docs in results:
+        for rank, doc in enumerate(docs):
+            doc_str = dumps(doc)
+            if doc_str not in fused_scores:
+                fused_scores[doc_str] = 0
+            fused_scores[doc_str] += 1 / (rank + k)
+    
+    return [
+        (loads(doc), score)
+        for doc, score in sorted(fused_scores.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+# Generate multiple queries
+questions = generate_queries(original_question)  # LLM generates variants
+# Retrieve for each
+all_results = [retriever.invoke(q) for q in questions]
+# Fuse with RRF
+fused_results = reciprocal_rank_fusion(all_results)
+```
+
+- **Use:** same situations as multi-query, but with better merging. RRF is a general fusion tool that also appears in hybrid search and re-ranking.
+
+---
+
+### 3. Decomposition
+
+For complex, multi-part questions, break the question into sequential sub-questions, answer each (feeding the previous answer as context to the next), then synthesize a final answer.
+
+```python
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+
+decompose_prompt = ChatPromptTemplate.from_template("""
+You are a helpful assistant. Break this question into 2-4 simpler sub-questions.
+Return them as a numbered list.
+
+Question: {question}
+""")
+
+decompose_chain = decompose_prompt | llm | StrOutputParser()
+
+sub_questions = decompose_chain.invoke({"question": "Compare X's revenue growth to Y's margin trend"})
+# → ["What was X's revenue growth over the past 3 years?",
+#    "What was Y's profit margin trend over the past 3 years?",
+#    "How do these compare?"]
+```
+
+- **Intuition:** less "rephrase the same question," more "split a hard question into a chain of easy ones"
+- **Use:** multi-hop reasoning — maps to agentic patterns (Blog 11)
+
+---
+
+### 4. Step-Back
+
+Generate a more abstract, higher-level question first, retrieve for both the original and the step-back version, and combine.
+
+```python
+step_back_prompt = ChatPromptTemplate.from_template("""
+You are an expert at taking a specific question and abstracting it to a broader topic.
+Generate a step-back question that would provide useful background context.
+
+Question: {question}
+Step-back question:
+""")
+
+step_back_chain = step_back_prompt | llm | StrOutputParser()
+
+original = "Can a goldfish survive at 2°C?"
+step_back = step_back_chain.invoke({"question": original})
+# → "What factors affect fish cold tolerance?"
+
+# Retrieve for both, combine context
+original_docs = retriever.invoke(original)
+stepback_docs = retriever.invoke(step_back)
+combined_context = original_docs + stepback_docs
+```
+
+- **Intuition:** the abstract question retrieves foundational documents the narrow query would skip
+- **Use:** questions that need broad grounding to answer well
+
+---
+
+### 5. HyDE (Hypothetical Document Embeddings)
+
+The clever one — conceptually distinct. The problem it targets: a question and an answer are different **shapes** of text, so a question's embedding may not sit near the answer-shaped documents you want.
+
+HyDE's fix: have the LLM **hallucinate a fake answer** to the question, then embed that fake answer and use it for retrieval.
+
+```
+Question ──LLM──▶ hypothetical (fake) answer ──embed──▶ retrieve real docs near it
+```
+
+```python
+from langchain_core.prompts import ChatPromptTemplate
+
+hyde_prompt = ChatPromptTemplate.from_template("""
+Please write a passage that would answer the following question.
+Write a hypothetical, plausible answer even if you're not sure it's correct.
+
+Question: {question}
+Passage:
+""")
+
+hyde_chain = hyde_prompt | llm | StrOutputParser()
+
+# Generate hypothetical document
+hypothesis = hyde_chain.invoke({"question": "What is our Indonesia electronics refund policy?"})
+
+# Embed the hypothesis, not the question
+hypothesis_embedding = embeddings.embed_query(hypothesis)
+
+# Retrieve real docs near the hypothesis embedding
+results = vectorstore.similarity_search_by_vector(hypothesis_embedding, k=5)
+```
+
+**Why it works even though the fake answer may be wrong:** it doesn't need to be factually correct — it just needs to be **answer-shaped**, so it lands in the right neighborhood and pulls back the real documents that look like it. You're matching answer-to-answer instead of question-to-answer. The real retrieved docs supply the actual facts.
+
+- **Use:** question-answer shape mismatch; short queries against verbose documents
+- **Risk:** if the hallucinated answer drifts off-topic, it can mislead retrieval
+
+---
+
+## The Query Translation Failure Catalog
+
+1. **Latency/cost blowup** — every technique adds LLM calls and/or extra retrieval passes; multi-query × re-rank can multiply per-query cost. Budget it.
+2. **Variant drift** — LLM-generated rephrasings wander off-topic, retrieving irrelevant docs that pollute the union
+3. **HyDE hallucination drift** — the fake answer is so wrong it pulls the wrong neighborhood
+4. **Over-decomposition** — splitting a simple question into needless sub-questions, adding latency for no gain
+5. **Applying it everywhere** — these help vocabulary/shape mismatch and complex questions; on already-well-phrased queries they add cost for little benefit
+6. **No fusion/dedup** — unioning multi-query results without RRF or dedup floods the prompt with near-duplicates
+
+---
+
+## Match Technique to Symptom
+
+| Symptom | Technique |
+|---------|-----------|
+| Vocabulary scatter (user and docs use different words) | Multi-query / RAG-Fusion |
+| Multi-part / multi-hop reasoning | Decomposition |
+| Question needs broad foundational context | Step-Back |
+| Question/answer shape gap (short query, verbose docs) | HyDE |
+
+---
+
+## Composing Techniques
+
+These aren't mutually exclusive:
+
+```python
+# A realistic pipeline:
+# 1. Decompose complex question into sub-questions
+# 2. Apply multi-query to each sub-question
+# 3. Retrieve for all variants
+# 4. Fuse with RRF
+# 5. Re-rank top candidates (Blog 9)
+# 6. Generate final answer
+
+# But: each step adds cost. Apply what the symptom warrants.
+```
+
+---
+
+## Summary
+
+| Technique | What it does | Best for |
+|-----------|-------------|---------|
+| Multi-query | N rephrasings, union results | Vocabulary mismatch |
+| RAG-Fusion | + RRF to boost consistent results | Vocabulary mismatch, better merging |
+| Decomposition | Sequential sub-questions | Multi-hop reasoning |
+| Step-back | Abstract to broader context first | Questions needing foundational grounding |
+| HyDE | Embed a fake answer, match answer-to-answer | Query/doc shape gap |
+
+> **Most retrieval failures are query problems, not index problems.**
+
+---
+
+**Next:** [Blog 8 — Routing & Query Construction — When RAG Isn't the Answer](/blog/rag-08-routing-query-construction)
+
+**Resources:**
+- [LangChain MultiQueryRetriever](https://python.langchain.com/docs/how_to/MultiQueryRetriever/)
+- [RAG-Fusion (GitHub)](https://github.com/Raudaschl/rag-fusion)
+- [HyDE paper](https://arxiv.org/abs/2212.10496)
+- [LangChain RAG from scratch — Query Translation](https://github.com/langchain-ai/rag-from-scratch/blob/main/rag_from_scratch_5_to_9.ipynb)
+- [Step-Back Prompting paper](https://arxiv.org/abs/2310.06117)

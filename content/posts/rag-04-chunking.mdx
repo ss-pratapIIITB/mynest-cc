@@ -1,0 +1,265 @@
+---
+title: "Blog 4: Chunking — The Most Underrated Decision in RAG"
+date: "2026-06-13"
+excerpt: "Chunking sounds trivial but it's one of the highest-leverage decisions in the whole pipeline. Get it wrong and retrieval is doomed no matter how good your embeddings are."
+tags: ["rag", "chunking", "indexing", "embeddings", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 4
+---
+
+# Chunking — The Most Underrated Decision in RAG
+
+This is **Blog 4** in the [RAG series](/blog).
+
+---
+
+## Why You Have to Chunk at All
+
+You can't embed a whole 50-page document as a single vector — for two reasons:
+
+1. **The LLM has a limited context window.** You can't stuff everything in at generation time.
+2. **Embeddings get blurry when text is too long.** A single vector trying to represent a whole document averages all its distinct ideas into a mush that represents none of them well.
+
+So you split documents into **chunks** — the unit you embed, store, and retrieve. Chunking sounds trivial ("just split the text") and is in fact one of the **highest-leverage decisions** in the whole pipeline. Get it wrong and retrieval is doomed no matter how good your embeddings are.
+
+---
+
+## The Central Tension
+
+Every chunking decision trades **context against precision**:
+
+| Too small | Too large |
+|-----------|-----------|
+| Surrounding context is lost. "It increased by 40%." — what did? | Many ideas averaged into one blurry vector → worse matching. |
+| Precise but insufficient for the LLM to answer. | Dilutes the embedding and wastes context-window space at generation. |
+
+There is no universal right size. It depends on your documents, your embedding model's max input length, and your query patterns.
+
+---
+
+## The Strategies, Simplest to Most Sophisticated
+
+### 1. Fixed-Size Chunking
+
+Split every N tokens, optionally with overlap (the last X tokens of one chunk repeat at the start of the next).
+
+```python
+from langchain.text_splitter import CharacterTextSplitter
+
+splitter = CharacterTextSplitter(
+    chunk_size=1000,       # ~250 words
+    chunk_overlap=200,     # 20% overlap
+    length_function=len,
+)
+chunks = splitter.split_text(text)
+```
+
+- **Pros:** dead simple, fast, predictable cost and chunk count
+- **Cons:** blindly cuts sentences, paragraphs, tables, and ideas in half
+- **Use:** a baseline / starting point, or when documents have no usable structure
+
+---
+
+### 2. Recursive Character Splitting (the sane default)
+
+Split on a hierarchy of separators: try paragraph breaks first, then single newlines, then sentences, then spaces — recursing until chunks fit the size target.
+
+```python
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=200,
+    separators=["\n\n", "\n", ". ", " ", ""],  # priority order
+)
+chunks = splitter.split_documents(docs)
+```
+
+This is [LangChain's `RecursiveCharacterTextSplitter`](https://python.langchain.com/docs/concepts/text_splitters/) — the recommended default for general prose.
+
+- **Pros:** respects natural boundaries far better than fixed-size while staying cheap
+- **Cons:** still size-driven, not meaning-driven
+- **Use:** the default for general prose
+
+---
+
+### 3. Document-Structure-Aware Splitting
+
+Use the document's own structure as boundaries: Markdown headings, HTML tags, PDF sections, code functions/classes.
+
+```python
+from langchain.text_splitter import MarkdownHeaderTextSplitter
+
+headers_to_split_on = [
+    ("#", "Header 1"),
+    ("##", "Header 2"),
+    ("###", "Header 3"),
+]
+splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+md_header_splits = splitter.split_text(markdown_document)
+
+# Each chunk carries its heading context as metadata:
+# {"Header 1": "Installation", "Header 2": "Requirements", content: "..."}
+```
+
+- **Pros:** chunks are semantically coherent; preserves hierarchy; excellent for technical docs
+- **Cons:** depends on reliable structure extraction (messy PDFs may not provide it)
+- **Use:** wikis/Confluence, Markdown docs, code, well-structured reports
+
+---
+
+### 4. Semantic Chunking
+
+Embed sentences, then start a new chunk where the embedding similarity between consecutive sentences drops below a threshold — i.e., cut where the **topic shifts**, not where a character count hits.
+
+```python
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_openai import OpenAIEmbeddings
+
+splitter = SemanticChunker(
+    OpenAIEmbeddings(),
+    breakpoint_threshold_type="percentile",
+    breakpoint_threshold_amount=95,
+)
+chunks = splitter.split_text(text)
+```
+
+- **Pros:** topically coherent chunks; boundaries follow meaning
+- **Cons:** more expensive (you embed during chunking); threshold needs tuning
+- **Use:** when retrieval quality justifies the cost
+
+---
+
+### 5. Proposition / Atomic Chunking (Dense X)
+
+Use an LLM to rewrite the document into standalone, self-contained factual statements, then embed those.
+
+```python
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(model="gpt-4o-mini")
+
+proposition_prompt = """
+Convert the following passage into a list of self-contained facts.
+Each fact should be a complete sentence that can stand alone.
+Return as a JSON list of strings.
+
+Passage: {text}
+"""
+
+# Each proposition becomes an independent chunk
+```
+
+- **Pros:** highest retrieval precision — each unit is a clean, context-complete fact
+- **Cons:** expensive (an LLM call per document at index time)
+- **Use:** high-precision needs where index-time cost is acceptable
+
+---
+
+### 6. Late Chunking (2024+ technique)
+
+Instead of chunking then embedding each chunk in isolation, you run the whole document through a long-context embedding model first, getting **contextualized token embeddings**, and then pool into chunks. Each chunk's embedding "knows" the document context around it.
+
+- **Pros:** chunks retain document-level context without overlap hacks; "it rose 40%" still embeds with awareness of what "it" was
+- **Cons:** needs a long-context embedding model; more compute; newer/less battle-tested
+- **Use:** when context-loss at boundaries is hurting retrieval
+
+See [JinaAI's late chunking paper](https://arxiv.org/abs/2409.04701) for the original approach.
+
+---
+
+## Parent-Document / Small-to-Big Retrieval
+
+This is the pattern to know cold. It decouples **what you match on** from **what you return**:
+
+- **Embed small, precise child chunks** for accurate matching (small = sharp embedding)
+- **Return the larger parent chunk/document** for generation (large = enough context for the LLM)
+
+```python
+from langchain.retrievers import ParentDocumentRetriever
+from langchain.storage import InMemoryStore
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+# Small chunks for indexing
+child_splitter = RecursiveCharacterTextSplitter(chunk_size=400)
+# Large chunks returned to LLM
+parent_splitter = RecursiveCharacterTextSplitter(chunk_size=2000)
+
+vectorstore = Chroma(embedding_function=OpenAIEmbeddings())
+store = InMemoryStore()
+
+retriever = ParentDocumentRetriever(
+    vectorstore=vectorstore,
+    docstore=store,
+    child_splitter=child_splitter,
+    parent_splitter=parent_splitter,
+)
+
+retriever.add_documents(docs)
+
+# At query time: matches on child chunks, returns parents
+results = retriever.get_relevant_documents("your query")
+```
+
+This is a **strong default for production**. You get precise retrieval and rich context simultaneously.
+
+---
+
+## Practical Parameters and How They Interact
+
+- **Chunk size must respect your embedding model's max input length** — exceed it and the model silently truncates, losing the tail of your chunk. (OpenAI `text-embedding-3-small`: 8192 tokens; BGE-M3: 8192 tokens)
+- **Overlap trades safety against redundancy.** Typical: 10–20% overlap.
+- **Smaller chunks → you must retrieve more** to assemble enough context → higher generation cost and can dilute the prompt.
+- **The parent-document pattern sidesteps this** — retrieve many small chunks, re-rank precisely, return parents.
+
+---
+
+## The Chunking Failure Catalog
+
+1. **Cutting through structure** — splitting mid-table, mid-function, mid-sentence
+2. **Too-large chunks** — blurry embeddings, diluted retrieval, wasted context window
+3. **Too-small chunks** — context-starved fragments that match but can't support an answer
+4. **No overlap on fixed-size** — ideas guillotined at boundaries
+5. **Ignoring max input length** — silent truncation of oversized chunks by the embedding model
+6. **One-size-fits-all across heterogeneous sources** — same chunker for a 12-word Slack message and a 4,000-word post-mortem
+7. **Lost breadcrumb context** — structure-aware chunks that drop their heading hierarchy ("Refunds" loses the "Indonesia > Electronics" context)
+8. **Chunking structured data at all** — tables/spreadsheets shouldn't be prose-chunked
+
+---
+
+## The Decision Framework
+
+| Source type | Strategy |
+|-------------|----------|
+| General prose | Recursive character splitting |
+| Markdown / wikis / Confluence | Structure-aware (heading boundaries) |
+| Code | Syntax-aware (function/class boundaries) |
+| Slack / chat | Conversation-reconstruction (Blog 3) |
+| Tables | Table-preserving (keep as unit or go SQL) |
+| Dense domain text (legal, medical) | Semantic chunking or proposition |
+
+**Per-source, not global.** Match it to document type. "I'd chunk these sources differently because they have different shapes" is a senior signal.
+
+**Tune empirically** — sweep chunk size and overlap, measure context recall/precision on a golden set of queries (Blog 12), not by gut.
+
+---
+
+## Summary
+
+- Chunk = unit you embed/retrieve. Chunking is high-leverage; bad chunking dooms retrieval.
+- Central tension: too small = context-starved; too large = blurry embedding + wasted context.
+- **Default stack:** structure-aware where structure exists, recursive otherwise, with the parent-document pattern so you match small and return big.
+- Attach heading breadcrumbs + metadata to every chunk — cheap, and it powers both retrieval context and citations.
+
+---
+
+**Next:** [Blog 5 — Embeddings — How Machines Map Language to Meaning](/blog/rag-05-embeddings)
+
+**Resources:**
+- [LangChain text splitters docs](https://python.langchain.com/docs/concepts/text_splitters/)
+- [LangChain Parent Document Retriever](https://python.langchain.com/docs/how_to/parent_document_retriever/)
+- [Semantic chunking tutorial](https://python.langchain.com/docs/how_to/semantic-chunker/)
+- [Late chunking paper (JinaAI)](https://arxiv.org/abs/2409.04701)
+- [Dense X Retrieval (proposition chunking)](https://arxiv.org/abs/2312.06648)

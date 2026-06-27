@@ -1,0 +1,182 @@
+---
+title: "Blog 1: What is RAG — The Open-Book Exam for AI"
+date: "2026-06-10"
+excerpt: "Large language models are brilliant students who've read everything — but they're taking a closed-book exam. RAG hands them the book. Here's why that changes everything."
+tags: ["rag", "foundations", "llm", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 1
+---
+
+# What is RAG — The Open-Book Exam for AI
+
+This is **Blog 1** in a series on building Retrieval-Augmented Generation (RAG) systems from the ground up. By the end of this series you'll understand every component of production RAG — from document ingestion to evaluation. No shortcuts.
+
+---
+
+## The Problem: Frozen Knowledge
+
+A large language model like GPT-4 or Claude is, at its core, a very sophisticated text predictor that has read an enormous amount of the internet and compressed what it "learned" into billions of numbers called **weights**. Once training finishes, those weights are frozen. That freezing creates three hard problems:
+
+1. **Knowledge cutoff.** It knows nothing that happened after its training data was collected. Ask it about last week and it either guesses or admits ignorance.
+2. **No access to your private data.** Your company's documents, your internal wiki, your customer's contracts — none of that was in the training set.
+3. **Hallucination.** When asked something it doesn't know, an LLM very often produces a fluent, confident, *wrong* answer — because its job is to produce plausible text, not to be correct.
+
+**Retrieval-Augmented Generation (RAG)** is the dominant fix for all three.
+
+## The Core Idea
+
+Instead of hoping the answer is baked into the model's frozen weights, you store your knowledge separately, and at the moment a question is asked, you **fetch the relevant pieces and hand them to the model as part of the prompt**. The model then answers using the text you just gave it.
+
+### The Open-Book Exam Analogy
+
+Think of the difference between a closed-book exam and an open-book exam.
+
+- A **plain LLM** is a student taking a closed-book exam: brilliant, well-read, but answering purely from memory — and when memory fails, they bluff.
+- A **RAG system** is the same student taking an open-book exam: before answering, they flip to the relevant page, read it, and answer based on what's actually written there.
+
+The open-book student doesn't need to have memorized everything. They need two skills: **finding the right page quickly** (retrieval) and **synthesizing a good answer from it** (generation). Almost every technique in this series improves one of these two skills.
+
+## Why Not Just Retrain the Model?
+
+A fair question: if the model doesn't know your data, why not just train it on your data?
+
+Three reasons:
+
+| Problem | Why It Matters |
+|---------|---------------|
+| **Cost and speed** | Training or fine-tuning a frontier model is expensive and slow. Your data changes daily. |
+| **Freshness** | RAG lets you update knowledge by updating the document store — instant. The model never changes. |
+| **Provenance** | With RAG, answers are grounded in specific retrieved documents, so you can cite sources. A fine-tuned model "knows" things but can't tell you where it learned them. |
+
+Fine-tuning and RAG are not enemies. The mature answer to "fine-tune or RAG?" is: **RAG for knowledge, fine-tune for behavior, and often both.**
+
+## The Three Stages
+
+Every RAG system — from a weekend prototype to a system serving millions — is built on three stages.
+
+### Stage 1 — Indexing (offline)
+
+You take your raw documents and turn them into something searchable by meaning. Concretely:
+
+```
+Documents → load → split into chunks → embed each chunk → store in vector DB
+```
+
+This happens ahead of time, in the background. It's not triggered by a user question.
+
+### Stage 2 — Retrieval (query time)
+
+A user asks a question. You convert the question into an embedding using the **same model** used at indexing, and ask the vector store: "which stored chunks are closest in meaning to this question?" It returns the top handful — the `top-k` most relevant chunks.
+
+### Stage 3 — Generation (query time)
+
+You take those retrieved chunks, paste them into a prompt along with the user's question, and send it to the LLM:
+
+```
+Question → embed → retrieve top-k chunks → stuff into prompt → LLM → grounded answer
+```
+
+> **Critical:** Indexing and retrieval must use the **same embedding model**, because they place text into the same vector space. The trick is that the question's vector and the right chunk's vector land near each other in that space. Mix models and they live in incompatible spaces — retrieval returns garbage.
+
+## A Minimal RAG in Code
+
+Here's the skeleton of a RAG system using [LangChain](https://python.langchain.com/docs/tutorials/rag/) and Chroma:
+
+```python
+from langchain_community.document_loaders import WebBaseLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+
+# 1. INDEXING
+loader = WebBaseLoader("https://your-docs-url.com")
+docs = loader.load()
+
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+chunks = splitter.split_documents(docs)
+
+vectorstore = Chroma.from_documents(chunks, OpenAIEmbeddings())
+retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+# 2. RETRIEVAL + GENERATION
+prompt = ChatPromptTemplate.from_template("""
+Answer the question using ONLY the context below.
+If the answer isn't in the context, say you don't know.
+
+Context: {context}
+Question: {question}
+""")
+
+llm = ChatOpenAI(model="gpt-4o-mini")
+
+chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt
+    | llm
+)
+
+response = chain.invoke("What is the refund policy?")
+```
+
+LangChain's full RAG tutorial is [here](https://python.langchain.com/docs/tutorials/rag/).
+
+## The Pipeline Map
+
+Lance Martin's well-known ["RAG from scratch"](https://github.com/langchain-ai/rag-from-scratch) series visualizes the whole field as interventions on a core pipeline:
+
+```
+INDEXING (offline)
+Documents → parse → chunk → embed → vector store
+
+QUERY (online)
+[Query Translation] → [Routing] → [Query Construction]
+                                         ↓
+                              [Retrieval + Re-ranking]
+                                         ↓
+                              [Generation + Grounding]
+                                         ↓
+                                       Answer
+```
+
+Each blog in this series maps to one section of this pipeline.
+
+## When NOT to Use RAG
+
+A junior engineer reaches for RAG for every "AI over my data" request. The senior move is to first ask whether RAG is even the right tool.
+
+**RAG is the wrong answer when:**
+
+- **The question is a structured-data lookup.** "What were our top 5 expenses last month?" wants SQL, not semantic search. Embedding rows and doing similarity search would be slower and less accurate than a `SELECT`.
+- **The corpus is tiny.** 20 documents? Just stuff them all into a modern long-context model's prompt directly ("context stuffing"). RAG earns its complexity at scale.
+- **The answer requires reasoning over the whole corpus.** "Summarize themes across 10,000 documents" isn't a top-k retrieval problem. This needs hierarchical summarization (see Blog 11).
+- **The data changes faster than you can index.** Real-time stock prices or live sensor data want a live API/tool call, not a periodically-rebuilt index.
+
+The best systems are often RAG for the unstructured-text parts plus SQL/API tool-calls for the structured/live parts, orchestrated together.
+
+## What Goes Wrong (Even at This Level)
+
+- **Assuming RAG removes hallucination.** It reduces it, but the model can still hallucinate when retrieved chunks don't contain the answer. Grounding and evaluation (Blog 10, Blog 12) are what actually control this.
+- **Treating retrieval as solved by "just embed everything."** Retrieval quality is where most RAG systems live or die, and naive top-k is rarely good enough in production.
+- **Ignoring the offline/online split.** Forgetting that indexing is a recurring operational cost (re-indexing when data changes) is a classic underestimate.
+
+## Summary
+
+| Concept | One Line |
+|---------|----------|
+| RAG | Store knowledge externally, fetch relevant pieces at query time, hand to LLM as context |
+| Why | Solves knowledge cutoff, private data access, hallucination, and adds provenance |
+| Three stages | Indexing (offline) → Retrieval → Generation |
+| Key constraint | Index and retrieve with the **same** embedding model |
+| Fine-tune vs RAG | Fine-tune for behavior, RAG for knowledge |
+
+---
+
+**Next:** [Blog 2 — Tracing a Question Through a RAG System End-to-End](/blog/rag-02-end-to-end-mental-model)
+
+**Resources:**
+- [LangChain RAG tutorial](https://python.langchain.com/docs/tutorials/rag/)
+- [RAG from scratch (LangChain YouTube series)](https://github.com/langchain-ai/rag-from-scratch)
+- [LlamaIndex RAG guide](https://docs.llamaindex.ai/en/stable/understanding/rag/)
+- [Original RAG paper (Lewis et al., 2020)](https://arxiv.org/abs/2005.11401)

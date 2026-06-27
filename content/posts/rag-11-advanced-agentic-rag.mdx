@@ -1,0 +1,446 @@
+---
+title: "Blog 11: Advanced & Agentic RAG — Self-RAG, CRAG, GraphRAG, and Beyond"
+date: "2026-06-20"
+excerpt: "Beyond the basic retrieve-then-generate loop: adaptive retrieval that decides when and how to retrieve, graph-structured knowledge, multi-hop reasoning, and multi-vector representations — the techniques that unlock hard questions."
+tags: ["rag", "agentic-rag", "self-rag", "graphrag", "crag", "raptor", "series:rag-course"]
+series: "Building RAG Systems"
+seriesOrder: 11
+---
+
+# Advanced & Agentic RAG — Self-RAG, CRAG, GraphRAG, and Beyond
+
+This is **Blog 11** in the [RAG series](/blog).
+
+---
+
+## Why "Basic RAG" Hits a Ceiling
+
+The vanilla RAG loop is always:
+```
+query → retrieve → generate
+```
+
+It breaks in predictable ways:
+- **Multi-hop questions** that require chaining facts across documents
+- **Bad retrieval** that neither the system nor the user notices — garbage in, hallucinated answer out
+- **Global/summary questions** that no single chunk can answer
+- **Complex entity relationships** that are navigable in a graph but not in a flat vector space
+- **Queries that don't need retrieval** — the LLM already knows; forced retrieval adds noise
+
+Advanced RAG answers these. The unifying idea: make the system smarter about **when to retrieve, what to retrieve, and how to use what it finds**.
+
+---
+
+## CRAG — Corrective RAG
+
+CRAG adds a **document grader** between retrieval and generation. It checks whether the retrieved docs are actually relevant to the query, and takes corrective action if they're not.
+
+```
+query
+  ↓
+[retrieve]
+  ↓
+[grade each doc: relevant / irrelevant / ambiguous]
+  ↓
+  ├── if relevant: generate
+  ├── if ambiguous: web search, supplement, generate
+  └── if all irrelevant: web search, replace, generate
+```
+
+```python
+from typing import TypedDict, List, Literal
+from langgraph.graph import StateGraph, START, END
+from langchain_core.documents import Document
+
+class State(TypedDict):
+    question: str
+    documents: List[Document]
+    generation: str
+    retrieval_grade: Literal["relevant", "irrelevant", "ambiguous"]
+
+def grade_documents(state: State) -> State:
+    question = state["question"]
+    documents = state["documents"]
+    
+    grade_prompt = """You are a relevance grader.
+    
+    Document: {document}
+    Question: {question}
+    
+    Is this document relevant to answering the question?
+    Answer: 'yes', 'no', or 'partial'"""
+    
+    grades = []
+    for doc in documents:
+        grade = llm.invoke(grade_prompt.format(
+            document=doc.page_content,
+            question=question
+        ))
+        grades.append(grade.content.lower().strip())
+    
+    if all(g == "no" for g in grades):
+        return {**state, "retrieval_grade": "irrelevant"}
+    elif any(g == "yes" for g in grades):
+        return {**state, "retrieval_grade": "relevant"}
+    else:
+        return {**state, "retrieval_grade": "ambiguous"}
+
+def web_search(state: State) -> State:
+    """Fall back to web search when local retrieval fails."""
+    from langchain_community.tools import TavilySearchResults
+    web = TavilySearchResults(max_results=3)
+    results = web.invoke(state["question"])
+    docs = [Document(page_content=r["content"]) for r in results]
+    return {**state, "documents": docs}
+
+# Build graph
+graph = StateGraph(State)
+graph.add_node("retrieve", retrieve_node)
+graph.add_node("grade", grade_documents)
+graph.add_node("web_search", web_search)
+graph.add_node("generate", generate_node)
+
+graph.add_edge(START, "retrieve")
+graph.add_edge("retrieve", "grade")
+graph.add_conditional_edges(
+    "grade",
+    lambda s: s["retrieval_grade"],
+    {
+        "relevant": "generate",
+        "irrelevant": "web_search",
+        "ambiguous": "web_search",
+    }
+)
+graph.add_edge("web_search", "generate")
+graph.add_edge("generate", END)
+
+app = graph.compile()
+```
+
+**Key resources:** [CRAG paper (Yan et al., 2024)](https://arxiv.org/abs/2401.15884) | [LangGraph CRAG tutorial](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_crag/)
+
+---
+
+## Self-RAG — Generating with Self-Reflection
+
+Self-RAG teaches the LLM to reflect on its own outputs using special tokens:
+
+| Token | Meaning |
+|-------|---------|
+| `[Retrieve]` / `[No Retrieve]` | Does this step need retrieval? |
+| `[IsRel]` / `[IsRel+]` | Are retrieved docs relevant? |
+| `[IsSup]` / `[Partial]` / `[NoSup]` | Is my generation supported by docs? |
+| `[IsUse]` | Is this response useful? |
+
+The model outputs these reflection tokens alongside the answer, making its own quality judgment part of the generation.
+
+```python
+# Self-RAG with LangGraph — simulating the reflection pattern
+# (actual Self-RAG uses a fine-tuned model with special tokens;
+# this approximates it with a standard model)
+
+def should_retrieve(state: State) -> str:
+    """Decide whether retrieval is needed for this query."""
+    assess_prompt = """Do you need to retrieve documents to answer this?
+    
+    Question: {question}
+    
+    Answer 'yes' if you need external knowledge, 'no' if you can answer from training.
+    Answer with just 'yes' or 'no'."""
+    
+    response = llm.invoke(assess_prompt.format(question=state["question"]))
+    return "retrieve" if "yes" in response.content.lower() else "generate_direct"
+
+def grade_generation(state: State) -> str:
+    """Check if generation is supported by retrieved docs."""
+    assess_prompt = """Is the following answer supported by the provided context?
+    
+    Context: {context}
+    Answer: {generation}
+    
+    Answer 'supported', 'partial', or 'not_supported'."""
+    
+    context = "\n".join([d.page_content for d in state["documents"]])
+    grade = llm.invoke(assess_prompt.format(
+        context=context,
+        generation=state["generation"]
+    ))
+    
+    grade_text = grade.content.lower()
+    if "not_supported" in grade_text:
+        return "regenerate"
+    elif "partial" in grade_text:
+        return "regenerate"
+    else:
+        return "done"
+```
+
+**Key resource:** [Self-RAG paper (Asai et al., 2023)](https://arxiv.org/abs/2310.11511)
+
+---
+
+## GraphRAG — Knowledge Graphs for Global Questions
+
+Vector RAG struggles with "global" questions: *"What are the main themes across all customer feedback?"* No single chunk can answer — it requires synthesizing across the whole corpus.
+
+**GraphRAG** (Microsoft, 2024) solves this by building a knowledge graph from the documents and using it alongside or instead of a vector store:
+
+```
+Documents
+  ↓
+[LLM extracts entities and relationships]
+  ↓
+Knowledge Graph
+  (nodes = entities, edges = relationships)
+  ↓
+Hierarchical community clustering (Leiden algorithm)
+  ↓
+Community summaries (each cluster summarized)
+  ↓
+Query → relevant communities → synthesized answer
+```
+
+```python
+# Using the Microsoft GraphRAG package
+# pip install graphrag
+
+# Minimal workflow:
+# 1. Initialize
+# graphrag init --root ./my_data
+
+# 2. Index (builds the graph)
+# graphrag index --root ./my_data
+
+# 3. Query
+# graphrag query --root ./my_data --method global \
+#   "What are the main themes in this corpus?"
+
+# Python API:
+from graphrag.query.context_builder.entity_extraction import EntityVectorStoreKey
+```
+
+**Two query modes:**
+- **Global search** — clusters communities, merges summaries; answers "what are the main themes" questions. **Expensive** (proportional to graph size).
+- **Local search** — finds entities relevant to the question, traverses relationships; much cheaper than global.
+
+**When to use:** synthesis questions, theme extraction, relationship traversal, any question that requires global understanding of a corpus. For standard Q&A, basic RAG wins on cost.
+
+**Key resources:** [GraphRAG paper](https://arxiv.org/abs/2404.16130) | [microsoft/graphrag](https://github.com/microsoft/graphrag) | [neo4j-graphrag-python](https://github.com/neo4j/neo4j-graphrag-python)
+
+---
+
+## RAPTOR — Recursive Summarization
+
+RAPTOR builds a **tree of summaries**:
+
+```
+Level 0: raw chunks (leaves)
+Level 1: cluster summaries (group similar chunks → summarize)
+Level 2: summaries of summaries
+...
+Root: one top-level summary
+```
+
+```python
+from langchain_community.document_transformers import (
+    EmbeddingsClusteringFilter,
+)
+
+def build_raptor_tree(docs, levels=3):
+    """Build recursive summary tree."""
+    current_level = docs
+    all_summaries = []
+    
+    for level in range(levels):
+        # Cluster by semantic similarity
+        clusters = cluster_docs(current_level, n_clusters=max(1, len(current_level)//5))
+        
+        summaries = []
+        for cluster in clusters:
+            # Summarize each cluster
+            combined = "\n\n".join([d.page_content for d in cluster])
+            summary = llm.invoke(f"Summarize the following:\n\n{combined}")
+            summaries.append(Document(
+                page_content=summary.content,
+                metadata={"level": level + 1, "sources": [d.metadata for d in cluster]}
+            ))
+        
+        all_summaries.extend(summaries)
+        current_level = summaries  # Next level summarizes the summaries
+    
+    return all_summaries + docs  # Include all levels in the index
+
+# Index everything (leaves + all summary levels)
+all_docs = build_raptor_tree(base_chunks)
+vectorstore = Chroma.from_documents(all_docs, embeddings)
+```
+
+**When to use:** long documents, questions that need both specific detail and high-level summary, domains where hierarchical structure exists naturally (textbooks, legal codes, technical specs).
+
+**Key resource:** [RAPTOR paper (Sarthi et al., 2024)](https://arxiv.org/abs/2401.18059)
+
+---
+
+## ColBERT / Late Interaction
+
+Standard bi-encoders compress a document into **one** vector — all information compresses to a single point. ColBERT doesn't.
+
+**ColBERT** uses **per-token embeddings**: the query and document each become a **matrix** (one vector per token), not a single pooled vector.
+
+Scoring uses **MaxSim** — for each query token, find the maximum similarity to any document token, then sum:
+
+```
+score(q, d) = Σ_{qi in q} max_{di in d} sim(qi, di)
+```
+
+This preserves rich token-level alignment that pooled embeddings lose — especially important for:
+- Technical queries (where one wrong token matters)
+- Long documents
+- Multi-faceted queries with several distinct concepts
+
+```python
+# Using RAGatouille — the simplest ColBERT integration
+from ragatouille import RAGPretrainedModel
+
+rag = RAGPretrainedModel.from_pretrained("colbert-ir/colbertv2.0")
+
+# Index documents
+rag.index(
+    collection=["Document 1 content...", "Document 2 content..."],
+    index_name="my_index",
+    max_document_length=180,
+    split_documents=True,
+)
+
+# Search with MaxSim scoring
+results = rag.search(
+    query="What's the liability clause for enterprise contracts?",
+    k=5,
+)
+```
+
+**Tradeoff:** better retrieval accuracy, especially on complex queries — at the cost of significantly more storage (one vector per token vs one per chunk) and slower indexing.
+
+**Key resources:** [ColBERT paper](https://arxiv.org/abs/2004.12832) | [RAGatouille (GitHub)](https://github.com/AnswerDotAI/RAGatouille)
+
+---
+
+## Multi-Representation Indexing
+
+The **parent-document retriever pattern** (Blog 4) separates what you index from what you retrieve:
+
+```
+Small summaries → indexed for embedding search (precise retrieval)
+Full parent documents → stored separately (rich context for generation)
+```
+
+The multi-representation extension:
+
+```python
+from langchain.storage import InMemoryByteStore
+from langchain.retrievers import ParentDocumentRetriever
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Fine-grained splitter for indexing
+child_splitter = RecursiveCharacterTextSplitter(chunk_size=400)
+
+# Coarser splitter for what gets sent to the LLM
+parent_splitter = RecursiveCharacterTextSplitter(chunk_size=2000)
+
+# Docstore holds full parents
+docstore = InMemoryByteStore()
+
+retriever = ParentDocumentRetriever(
+    vectorstore=vectorstore,
+    docstore=docstore,
+    child_splitter=child_splitter,
+    parent_splitter=parent_splitter,
+)
+
+# Retrieval: embeds children (precise), returns parents (rich context)
+docs = retriever.invoke("Show me the liability clause")
+```
+
+---
+
+## Agentic RAG with LangGraph
+
+All of the above can be combined into an **agentic loop** — an LLM that decides its own retrieval strategy at each step:
+
+```python
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode
+
+# Define tools the agent can call
+tools = [
+    vector_search_tool,
+    sql_query_tool,
+    web_search_tool,
+    document_grader_tool,
+]
+
+# The agent decides which tool to use, or whether it's done
+agent_node = create_react_agent(llm, tools)
+
+graph = StateGraph(State)
+graph.add_node("agent", agent_node)
+graph.add_node("tools", ToolNode(tools))
+
+graph.add_edge(START, "agent")
+graph.add_conditional_edges(
+    "agent",
+    should_continue,  # Continue if tool calls pending, else END
+    {"tools": "tools", "end": END}
+)
+graph.add_edge("tools", "agent")
+
+app = graph.compile()
+```
+
+**LangGraph** is the standard orchestration framework for these agentic loops. Key concepts:
+- **Nodes:** Python functions (LLM calls, tool calls)
+- **Edges:** Transitions between nodes (can be conditional on state)
+- **State:** Typed dict that flows through all nodes
+
+**Key resources:** [LangGraph docs](https://langchain-ai.github.io/langgraph/) | [LangGraph RAG tutorials](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_crag/)
+
+---
+
+## When to Apply Which Technique
+
+| Symptom | Technique |
+|---------|-----------|
+| Retrieval succeeds but might be irrelevant | CRAG |
+| Complex multi-step questions | Self-RAG / decomposition |
+| "What are the main themes?" / synthesis queries | GraphRAG (global search) |
+| Entity relationships matter | GraphRAG (local search) |
+| Long documents, need both detail and summary | RAPTOR |
+| Technical queries, multi-faceted questions | ColBERT |
+| Retrieval returns irrelevant snippets, need full context | Parent-document retriever |
+| Query needs chaining across multiple sources | Agentic RAG / LangGraph |
+
+---
+
+## Summary
+
+| Technique | The Core Idea |
+|-----------|---------------|
+| CRAG | Grade retrieved docs; fall back to web if irrelevant |
+| Self-RAG | Generate + reflect on own output with special tokens |
+| GraphRAG | Build KG from corpus; global synthesis via community summaries |
+| RAPTOR | Recursive cluster-then-summarize tree for multi-level retrieval |
+| ColBERT | Per-token embeddings (MaxSim) for precise multi-concept queries |
+| Multi-representation | Index summaries, retrieve full parents |
+| LangGraph | Orchestration for all of the above as an agentic loop |
+
+---
+
+**Next:** [Blog 12 — Evaluation — Measuring Whether Your RAG Actually Works](/blog/rag-12-evaluation)
+
+**Resources:**
+- [CRAG paper](https://arxiv.org/abs/2401.15884)
+- [Self-RAG paper](https://arxiv.org/abs/2310.11511)
+- [GraphRAG (Microsoft)](https://arxiv.org/abs/2404.16130) / [GitHub](https://github.com/microsoft/graphrag)
+- [RAPTOR paper](https://arxiv.org/abs/2401.18059)
+- [ColBERT paper](https://arxiv.org/abs/2004.12832) / [RAGatouille](https://github.com/AnswerDotAI/RAGatouille)
+- [LangGraph documentation](https://langchain-ai.github.io/langgraph/)
