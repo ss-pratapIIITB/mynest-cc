@@ -1,0 +1,1073 @@
+---
+title: "LLM Agent Cost, Token & Latency Optimization — The Complete Production Guide"
+date: "2026-06-28"
+excerpt: "Everything that makes or breaks the business case for deploying a custom agentic solution: how costs compound in agent loops, the 8 optimization levers that matter, real numbers from DoorDash, Ramp, Airbnb, Care Access, and others — and how to build the ROI case for your organization."
+tags: ["llm", "agents", "cost-optimization", "production", "token-efficiency", "prompt-caching", "latency"]
+---
+
+# LLM Agent Cost, Token & Latency Optimization — The Complete Production Guide
+
+> *"Workflows that cost $0.50 in testing can hit $50,000/month at 100K executions."*
+
+This is the guide for engineering leaders and architects who need to understand, predict, and control LLM agent costs before — and after — going to production.
+
+It covers the full picture: how costs compound in agent loops, every significant optimization lever (with real code and real numbers), what actually broke in production at real companies, and how to build the business case for deploying custom agentic solutions at an enterprise.
+
+---
+
+## The Cost Reality Check
+
+Enterprise spending on LLM APIs more than doubled in six months: $3.5B in late 2024 to $8.4B by mid-2025. The teams leading that bill are almost always running agents, not simple chatbots.
+
+Why agents are expensive by nature:
+
+```
+Simple chat:   1 user message → 1 LLM call → 1 response
+               ~1,000 tokens, once
+
+Agent loop:    user query
+                  → LLM decides tool calls (tokens)
+                  → tool results appended to context (more tokens)
+                  → LLM decides next action (full context, every time)
+                  → repeat 5-50 times
+               ~50,000-500,000 tokens per task
+```
+
+**Agent workloads consume 5–20× more tokens than equivalent zero-shot calls.** In September 2025, across one major deployment, 99% of tokens consumed were *input* tokens accumulated in the trajectory — only 1% were generated output tokens.
+
+The three reasons agent costs compound:
+
+1. **Context is re-sent on every turn.** Every LLM call in a loop gets the full conversation history, tool catalog, and all prior tool outputs. The context grows with every step.
+2. **Tool outputs are token-dense.** Shopify found that tool outputs consume **100× more tokens than user messages**. A single database query result can add 10,000 tokens to the context.
+3. **Failures are expensive.** When an agent fails mid-task and retries from scratch, you pay full cost again. Without checkpointing, every failure doubles your spend.
+
+The cautionary tale: **GetOnStack** escalated from $127/week to $47,000 over four weeks due to an undetected infinite agent loop. No alerts, no guardrails, no cost ceiling.
+
+---
+
+## Anatomy of Agent Token Cost
+
+Understanding where tokens go is the prerequisite to cutting them:
+
+```
+Per-agent-turn token breakdown (typical):
+
+┌─────────────────────────────────────────┐
+│ System prompt + tool definitions        │  ~2,000-20,000 tokens
+│ (resent on EVERY turn)                  │  (fixed overhead per call)
+├─────────────────────────────────────────┤
+│ Conversation history                    │  grows ~1,000/turn
+│ (grows with every step)                 │
+├─────────────────────────────────────────┤
+│ Tool outputs from this session          │  largest variable — can be
+│ (database results, API responses, etc.) │  1,000-100,000 tokens each
+├─────────────────────────────────────────┤
+│ Current user query                      │  ~100-500 tokens
+│ (constant, small)                       │
+├─────────────────────────────────────────┤
+│ LLM output (reasoning + next action)    │  ~200-2,000 tokens output
+│ (what you pay 5× more for per token)    │
+└─────────────────────────────────────────┘
+```
+
+**The key insight:** Input tokens dominate, and output tokens cost 3–5× more per token than input. A system that generates verbose reasoning or long intermediate outputs will have a disproportionately high bill.
+
+---
+
+## The 8 Optimization Levers
+
+### Lever 1: Prompt Caching — The Single Highest ROI Move
+
+**What it is:** Cache the static prefix of your prompt (system prompt, tool definitions, large documents) so subsequent calls don't reprocess it.
+
+**The numbers:**
+- Anthropic: cache reads cost **10% of normal input** (90% savings)
+- OpenAI: cache reads cost **50% of normal input** (50% savings)
+- **Care Access achieved 86% cost reduction and 3× speed improvement** by separating static medical record context from dynamic query content and caching the former.
+- One developer went from **$720/month to $72/month** (90% reduction) after implementing prompt caching.
+
+**Anthropic prompt caching in practice:**
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# The system prompt is large, stable, and gets resent on every agent turn.
+# Without caching: you pay full price every call.
+# With caching: write once (1.25× cost), then all subsequent reads are 0.1×.
+
+SYSTEM_PROMPT = """You are an expert customer support agent for Acme Corp.
+Here are the complete product policies (10,000 tokens)...
+Here are the complete tool definitions (5,000 tokens)...
+Here are the domain guidelines (3,000 tokens)...
+""" # Total: ~18,000 tokens
+
+def agent_turn(conversation_history: list, user_message: str) -> str:
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        system=[
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"}  # ← This is it
+            }
+        ],
+        messages=conversation_history + [{"role": "user", "content": user_message}]
+    )
+    
+    # Check cache performance
+    usage = response.usage
+    print(f"Cache read: {usage.cache_read_input_tokens:,} tokens @ 0.1× price")
+    print(f"Cache write: {usage.cache_creation_input_tokens:,} tokens @ 1.25× price")
+    print(f"Regular input: {usage.input_tokens:,} tokens @ 1× price")
+    
+    return response.content[0].text
+```
+
+**The critical placement rule:** Put `cache_control` on the *last block whose prefix is identical across requests*. If you put it on a block that contains a timestamp or per-request variable, every call gets a cache miss.
+
+```python
+# ❌ WRONG: cache control on block with varying content
+messages = [
+    {"role": "user", "content": [
+        {"type": "text", "text": f"Current time: {datetime.now()} | Query: {user_query}",
+         "cache_control": {"type": "ephemeral"}}  # Changes every call → always misses
+    ]}
+]
+
+# ✅ CORRECT: cache static prefix, leave varying suffix uncached
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    system=[{"type": "text", "text": STATIC_SYSTEM_PROMPT,
+             "cache_control": {"type": "ephemeral"}}],  # Cached
+    messages=[
+        *conversation_history,           # Cached (older turns)
+        {"role": "user", "content": f"[{datetime.now()}] {user_query}"}  # Not cached (varies)
+    ]
+)
+```
+
+**Pre-warming the cache (for latency-sensitive systems):**
+
+```python
+# Load the cache before users arrive (e.g., at startup)
+def prewarm_cache():
+    prewarm = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=0,   # ← Returns immediately, no output tokens billed
+        system=[{"type": "text", "text": SYSTEM_PROMPT,
+                 "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": "warmup"}]
+    )
+    print(f"Cache warmed: {prewarm.usage.cache_creation_input_tokens:,} tokens written")
+    # Subsequent requests read from cache until TTL expires
+
+# For 5-minute TTL: pre-warm every 4.5 minutes
+# For 1-hour TTL: pre-warm every 55 minutes
+import threading, time
+
+def cache_keepalive():
+    while True:
+        prewarm_cache()
+        time.sleep(4.5 * 60)
+
+threading.Thread(target=cache_keepalive, daemon=True).start()
+```
+
+**Cache TTL options (Anthropic):**
+
+| TTL | Write cost | Read cost | Use when |
+|-----|-----------|-----------|----------|
+| 5 minutes | 1.25× | 0.1× | High-QPS systems (&gt;1 req/5 min) |
+| 1 hour | 2.0× | 0.1× | Lower QPS, gaps between requests |
+
+**With up to 4 cache breakpoints** you can cache sections that change at different frequencies:
+
+```python
+# Multi-breakpoint caching: different stability zones
+system=[
+    {"type": "text", "text": CORE_IDENTITY,
+     "cache_control": {"type": "ephemeral", "ttl": "1h"}},   # Most stable: 1h TTL
+    {"type": "text", "text": TOOL_DEFINITIONS,
+     "cache_control": {"type": "ephemeral", "ttl": "1h"}},   # Stable: 1h TTL
+    {"type": "text", "text": SESSION_CONTEXT,
+     "cache_control": {"type": "ephemeral"}},                 # Session-scoped: 5m TTL
+    {"type": "text", "text": REQUEST_CONTEXT}                 # Per-request: not cached
+]
+```
+
+---
+
+### Lever 2: Context / Trajectory Management
+
+The context window is your most dangerous resource. It grows with every agent step, costs money per token, and degrades model performance after a certain size.
+
+**"Context rot"** is the documented phenomenon (Anthropic research via Manus) where effective recall degrades between 50k–150k tokens regardless of the theoretical maximum context size. More tokens → worse performance AND higher cost.
+
+**Production pattern: Manus's staged compaction**
+
+Manus's production agent handles multi-step tasks spanning hundreds of conversational turns. Their approach:
+
+```python
+class ContextManager:
+    def __init__(self, soft_limit=50_000, hard_limit=100_000):
+        self.soft_limit = soft_limit
+        self.hard_limit = hard_limit
+    
+    def get_context(self, turns: list, token_count: int) -> list:
+        if token_count < self.soft_limit:
+            return turns  # All turns in full
+        
+        if token_count < self.hard_limit:
+            # Stage 1: Rolling window — drop oldest tool observations
+            # Keep full reasoning history; mask old tool outputs
+            return self._rolling_window_mask(turns)
+        
+        # Stage 2: Compress oldest 50% of tool calls
+        # Keep newest 50% in full for behavioral continuity
+        return self._staged_compress(turns, compress_ratio=0.5)
+    
+    def _rolling_window_mask(self, turns: list) -> list:
+        """Replace old tool outputs with summaries, keep reasoning."""
+        WINDOW_SIZE = 10  # Keep last 10 turns fully
+        
+        result = []
+        for i, turn in enumerate(turns):
+            if i < len(turns) - WINDOW_SIZE:
+                # Old turn: summarize tool outputs, keep action reasoning
+                result.append(self._summarize_observations(turn))
+            else:
+                result.append(turn)  # Recent turns: keep full
+        return result
+    
+    def _summarize_observations(self, turn: dict) -> dict:
+        """Replace verbose tool output with a 1-line summary."""
+        if turn.get("role") == "tool" and len(turn.get("content", "")) > 500:
+            turn = dict(turn)
+            turn["content"] = f"[Tool result: {turn['content'][:100]}... (truncated)]"
+        return turn
+```
+
+**JetBrains research finding:** Observation masking (rolling window) outperforms LLM summarization in 4 of 5 configurations AND is cheaper:
+- Both cut costs by 50%+ vs unmanaged contexts
+- Masking is **52% cheaper** per problem on large models
+- Summarization causes agents to run **15% longer** (obscures stopping signals)
+- The hybrid (mask + summarize only when truly unwieldy) wins overall
+
+**Elyos AI's "just-in-time" pattern for voice agents:**
+- Target: sub-400ms response for voice
+- Strategy: Add context exactly when needed, remove it immediately after use
+- Example: Emergency classification context → added for that step → removed once classification is complete
+- Result: Lean context throughout, no accumulation
+
+**The Shopify lesson:** Tool outputs consume 100× more tokens than user messages. Their solution: store full tool results in a vector store, pass only a summarized reference + retrieval-on-demand into the agent context.
+
+```python
+import json
+
+def compress_tool_result(result: dict, max_tokens: int = 500) -> dict:
+    """Store full result, pass summary + retrieval key to agent."""
+    result_str = json.dumps(result)
+    
+    if len(result_str) / 4 < max_tokens:  # rough token estimate
+        return {"content": result_str, "truncated": False}
+    
+    # Store full result externally
+    result_id = store_in_vector_db(result_str)
+    summary = llm_summarize(result_str, max_words=100)
+    
+    return {
+        "content": f"{summary}\n\n[Full result available: retrieve({result_id})]",
+        "truncated": True,
+        "retrieval_id": result_id,
+    }
+```
+
+---
+
+### Lever 3: Model Routing and Cascading
+
+Not every step in an agent pipeline requires a frontier model. Most agentic loops have tasks of wildly different complexity — routing them to the right model can cut costs 40–94%.
+
+**The cascading pattern: cheap first, escalate on failure**
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic()
+
+async def cascaded_agent_step(
+    prompt: str,
+    context: list,
+    task_complexity: str = "auto"
+) -> str:
+    """Use cheap model first; escalate to expensive model if needed."""
+    
+    # Tier 1: Haiku for simple classification, extraction, formatting
+    if task_complexity == "simple" or task_complexity == "auto":
+        result = await call_model("claude-haiku-4-5", prompt, context)
+        
+        # Check if the response is confident/complete
+        if is_confident(result) and not needs_reasoning(result):
+            return result  # Done. Paid $1/MTok input, not $5.
+    
+    # Tier 2: Sonnet for most reasoning tasks
+    if task_complexity in ("medium", "auto"):
+        result = await call_model("claude-sonnet-4-6", prompt, context)
+        if not needs_deep_reasoning(result):
+            return result  # Paid $3/MTok input.
+    
+    # Tier 3: Opus only for hard problems that slipped through
+    return await call_model("claude-opus-4-8", prompt, context)
+    # $5/MTok input — but rarely reached
+
+def is_confident(result: str) -> bool:
+    """Heuristic: response doesn't hedge, doesn't ask for clarification."""
+    hedges = ["I'm not sure", "I don't know", "could you clarify", "unclear"]
+    return not any(h.lower() in result.lower() for h in hedges)
+```
+
+**BudgetMLAgent result:** Cascaded LLM orchestration (low-cost model for most calls, escalate only on failure) reduced average per-task cost from $1.29 to $0.054 — **94% reduction** while maintaining or improving success rates.
+
+**A routing framework with explicit complexity scoring:**
+
+```python
+from pydantic import BaseModel
+from enum import Enum
+
+class TaskComplexity(str, Enum):
+    TRIVIAL = "trivial"     # Haiku: format, classify, extract
+    STANDARD = "standard"   # Sonnet: most reasoning, RAG, synthesis
+    HARD = "hard"           # Opus: multi-step reasoning, ambiguous problems
+
+class ComplexityRouter:
+    """Route agent steps to appropriate model tier."""
+    
+    TRIVIAL_PATTERNS = [
+        "extract", "format", "classify", "convert", "transform",
+        "check if", "does this contain", "is this a"
+    ]
+    
+    HARD_PATTERNS = [
+        "analyze and reason", "why did", "diagnose", "design",
+        "compare and contrast", "given all of the above"
+    ]
+    
+    def route(self, task_description: str) -> tuple[str, float]:
+        """Returns (model_id, estimated_cost_multiplier)."""
+        task_lower = task_description.lower()
+        
+        if any(p in task_lower for p in self.TRIVIAL_PATTERNS):
+            return "claude-haiku-4-5", 0.2   # ~20% of Sonnet cost
+        
+        if any(p in task_lower for p in self.HARD_PATTERNS):
+            return "claude-opus-4-8", 1.67   # ~167% of Sonnet cost
+        
+        return "claude-sonnet-4-6", 1.0      # Baseline
+
+router = ComplexityRouter()
+
+# Example in an agent pipeline
+def run_agent_pipeline(steps: list[dict]) -> list[str]:
+    results = []
+    for step in steps:
+        model, _ = router.route(step["description"])
+        result = call_model(model, step["prompt"], step["context"])
+        results.append(result)
+    return results
+```
+
+**Using a cheaper model as orchestrator:**
+
+```python
+# Orchestrator: small model decides what to do next
+# Workers: appropriate models for each subtask
+# This cuts orchestrator cost by 80% while keeping worker quality
+
+class HierarchicalAgent:
+    ORCHESTRATOR_MODEL = "claude-haiku-4-5"   # Cheap: just plans
+    WORKER_MODELS = {
+        "code": "claude-sonnet-4-6",
+        "analysis": "claude-opus-4-8",
+        "formatting": "claude-haiku-4-5",
+    }
+    
+    def run(self, task: str) -> str:
+        # Orchestrator plans (cheap)
+        plan = self._orchestrate(task)
+        
+        # Workers execute (right model for each subtask)
+        results = []
+        for step in plan.steps:
+            model = self.WORKER_MODELS.get(step.type, "claude-sonnet-4-6")
+            result = self._execute_step(model, step)
+            results.append(result)
+        
+        # Synthesize (cheap)
+        return self._synthesize(results)
+```
+
+---
+
+### Lever 4: Batching and Async Processing
+
+For any workload where users aren't waiting in real-time, batch APIs are a free 50% discount.
+
+| Provider | Batch discount | Latency | Use case |
+|----------|---------------|---------|----------|
+| Anthropic Batch API | 50% off all tokens | Up to 24h | Nightly processing, bulk eval |
+| OpenAI Batch API | 50% off | Up to 24h | Same |
+| Combined with caching | Up to 95% off | Up to 24h | Batch + cached prefix |
+
+```python
+import anthropic
+import json
+
+client = anthropic.Anthropic()
+
+def batch_process_documents(documents: list[dict]) -> str:
+    """Process 1000s of documents at 50% cost via Batch API."""
+    
+    requests = [
+        {
+            "custom_id": f"doc_{i}",
+            "params": {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 500,
+                "system": [
+                    {
+                        "type": "text",
+                        "text": "Extract key entities and summary.",
+                        "cache_control": {"type": "ephemeral"}  # Also cache in batch
+                    }
+                ],
+                "messages": [
+                    {"role": "user", "content": doc["text"]}
+                ]
+            }
+        }
+        for i, doc in enumerate(documents)
+    ]
+    
+    # Submit batch
+    batch = client.messages.batches.create(requests=requests)
+    print(f"Batch {batch.id} submitted: {len(requests)} requests")
+    print(f"Estimated cost: 50% of {len(requests) * 500} output tokens")
+    return batch.id
+
+def poll_batch_results(batch_id: str) -> list[dict]:
+    """Poll until complete, then retrieve results."""
+    import time
+    
+    while True:
+        batch = client.messages.batches.retrieve(batch_id)
+        if batch.processing_status == "ended":
+            break
+        print(f"Progress: {batch.request_counts}")
+        time.sleep(60)
+    
+    results = []
+    for result in client.messages.batches.results(batch_id):
+        if result.result.type == "succeeded":
+            results.append({
+                "id": result.custom_id,
+                "output": result.result.message.content[0].text
+            })
+    return results
+```
+
+**Compound savings example:**
+
+```python
+# Nightly document processing pipeline
+# Without optimization: 100K docs × 10K input tokens = 1B tokens × $3/MTok = $3,000/night
+
+# With optimizations:
+# Prompt caching: system prompt (5K tokens per request) = 99.5% cached after first = -$150
+# Batch API: 50% off all tokens = -$1,500
+# Context trimming: remove redundant content = -20% = -$270
+# Model routing: 70% to Haiku, 30% to Sonnet = -$600
+# Total: ~$480/night (84% reduction)
+```
+
+---
+
+### Lever 5: Output Token Optimization
+
+Output tokens cost 3–5× more per token than input. Anything that makes the model more verbose is expensive.
+
+```python
+# Strategies:
+
+# 1. Explicit length instructions
+system_prompt = """
+Be concise. Maximum 3 sentences for factual answers.
+Use bullet points, not paragraphs.
+Never repeat the question back.
+"""
+
+# 2. Structured output instead of prose
+from anthropic import Anthropic
+from pydantic import BaseModel
+
+class ExtractionResult(BaseModel):
+    entities: list[str]
+    sentiment: str  # "positive" | "negative" | "neutral"
+    confidence: float
+
+# Structured output = predictable, minimal output tokens
+# Prose output = LLM adds filler, restates, hedges = 2-5× tokens
+
+# 3. Token budgets for extended thinking
+response = client.messages.create(
+    model="claude-opus-4-8",
+    max_tokens=16000,
+    thinking={"type": "enabled", "budget_tokens": 5000},  # Cap thinking tokens
+    messages=[{"role": "user", "content": "Complex reasoning task..."}]
+)
+
+# 4. Max tokens ceiling
+response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=300,  # Hard ceiling — prevents runaway verbose responses
+    messages=[...]
+)
+
+# 5. Direct answer format
+# BEFORE: "Analyze this and provide a comprehensive overview of the key considerations..."
+# → 500 token response with preamble and caveats
+
+# AFTER: "List the 3 most important considerations. Format: '1. ...' one line each."
+# → 50 token response, same information
+```
+
+---
+
+### Lever 6: Fine-Tuning and Distillation
+
+For high-volume, well-defined tasks, fine-tuning a smaller model can achieve frontier quality at a fraction of the cost — sometimes better.
+
+**Real examples:**
+
+- **Stripe:** Domain-specific model improved fraud detection from 59% to 97% accuracy for large merchants. The fine-tuned specialized model outperformed general frontier models on this specific task.
+- **Robinhood:** Hierarchical tuning approach (prompt optimization → trajectory tuning with dynamic few-shot → LoRA fine-tuning) hit P90 latency targets while matching frontier model quality.
+- **OpenPipe's ART·E:** Trained Qwen-14B using RL (GRPO) for email search agents in under a day on a single H100 GPU (~$80). Result: outperformed OpenAI o3 on that specific task.
+
+**The fine-tuning decision framework:**
+
+```
+Is your task well-defined with consistent inputs/outputs?  No → Use frontier model
+         ↓ Yes
+Do you have 1,000+ labeled examples (or can generate them)?  No → Use frontier model + eval
+         ↓ Yes
+Is this task run >10,000 times/month?  No → Fine-tuning ROI is marginal
+         ↓ Yes
+Fine-tune. Expected outcome: 60-90% cost reduction, lower latency, better consistency.
+```
+
+**Generating fine-tuning data from frontier model outputs:**
+
+```python
+# The data flywheel: use frontier model to generate training data,
+# fine-tune a smaller model, serve the cheaper model in production.
+
+def generate_training_examples(task_description: str, n: int = 1000) -> list[dict]:
+    """Use Opus to generate examples; train Haiku to replace it."""
+    examples = []
+    
+    for _ in range(n):
+        # Generate diverse input
+        input_example = generate_diverse_input(task_description)
+        
+        # Get high-quality output from frontier model
+        response = client.messages.create(
+            model="claude-opus-4-8",  # Expensive, but only for training
+            max_tokens=500,
+            messages=[{"role": "user", "content": input_example}]
+        )
+        
+        examples.append({
+            "input": input_example,
+            "output": response.content[0].text
+        })
+    
+    # Fine-tune claude-haiku-4-5 on these examples
+    # After fine-tuning: same quality as Opus for this task, at Haiku prices
+    return examples
+```
+
+---
+
+### Lever 7: Semantic Caching
+
+Different users asking semantically similar questions should share the same LLM response — without re-running the model.
+
+**Redis LangCache achieved ~73% cost reduction** in high-repetition workloads (FAQ-style systems, support bots, documentation assistants).
+
+```python
+from langchain_openai import OpenAIEmbeddings
+from langchain.cache import RedisSemanticCache
+import langchain
+
+# Set up semantic cache
+langchain.llm_cache = RedisSemanticCache(
+    redis_url="redis://localhost:6379",
+    embedding=OpenAIEmbeddings(),
+    score_threshold=0.95,  # Cosine similarity threshold for cache hit
+)
+
+# First call: hits LLM
+result1 = agent.run("What's the return policy for electronics?")
+# → hits LLM, costs $0.005, result cached
+
+# Second call (different phrasing, same meaning): hits cache
+result2 = agent.run("Can I return an electronic item I bought?")
+# → cache hit (similarity > 0.95), costs $0.000
+
+# The cache hit rate in FAQ systems: 20-40% of queries
+# Each hit saves: full LLM cost (tokens + inference)
+```
+
+**Combining semantic cache with prompt cache:**
+
+```python
+class OptimizedAgentClient:
+    """Two-layer caching: semantic (response level) + prompt (token level)."""
+    
+    def __init__(self):
+        self.semantic_cache = SemanticCache(similarity_threshold=0.95)
+        self.client = anthropic.Anthropic()
+    
+    def run(self, query: str, context: list) -> str:
+        # Layer 1: semantic cache (cheapest — no LLM call at all)
+        cached = self.semantic_cache.get(query)
+        if cached:
+            return cached  # $0 cost
+        
+        # Layer 2: prompt cache (cheaper LLM call — 90% savings on input)
+        response = self.client.messages.create(
+            model="claude-sonnet-4-6",
+            system=[{
+                "type": "text",
+                "text": self.SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"}  # Cached input
+            }],
+            messages=context + [{"role": "user", "content": query}]
+        )
+        
+        result = response.content[0].text
+        self.semantic_cache.set(query, result)
+        return result
+```
+
+---
+
+### Lever 8: Architecture — Parallel, Async, Streaming
+
+**Parallelize independent agent steps:**
+
+```python
+import asyncio
+from langchain_core.runnables import RunnableParallel
+
+# Sequential (default): 4 LLM calls × 1s each = 4s total
+# Parallel: 4 LLM calls × 1s = 1s total
+
+async def parallel_research(question: str) -> dict:
+    """Run independent retrieval tasks in parallel."""
+    tasks = await asyncio.gather(
+        retrieve_from_vector_store(question),
+        query_sql_database(question),
+        search_web(question),
+        check_cache(question),
+    )
+    vector_results, sql_results, web_results, cache_results = tasks
+    
+    # Synthesize once, with all results
+    return await synthesize(vector_results + sql_results + web_results + cache_results)
+```
+
+**Streaming for perceived latency (not actual cost reduction):**
+
+```python
+# Streaming doesn't reduce tokens but dramatically improves perceived latency.
+# For customer-facing agents, time-to-first-token matters as much as total time.
+
+with client.messages.stream(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": user_query}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)  # User sees response immediately
+```
+
+**Async throughout your stack:**
+
+```python
+# Sync (blocks event loop, can't handle concurrent requests efficiently)
+docs = retriever.invoke(question)            # Blocks
+answer = llm.invoke(prompt.format(docs))    # Blocks
+
+# Async (frees event loop, handles 100s of concurrent requests)
+docs = await retriever.ainvoke(question)
+answer = await llm.ainvoke(prompt.format(docs))
+```
+
+**Robinhood's latency achievement:** Went from P90 latency of 55 seconds to **under 1 second** through a hierarchical approach: first prompt optimization, then dynamic few-shot examples in context (trajectory tuning), then LoRA fine-tuning for the hardest cases.
+
+---
+
+## Multi-Agent Specific Cost Traps
+
+Multi-agent systems have unique cost failure modes that don't exist in single-agent architectures:
+
+### Context accumulation across workers
+
+```
+Orchestrator accumulates:
+- Worker A's full output
+- Worker B's full output
+- Worker C's full output
+- Worker D's full output
+→ 4+ workers → context frequently exceeds window
+→ Orchestrator pays 4× token cost for context it doesn't need
+```
+
+**Fix: worker output summarization before passing to orchestrator**
+
+```python
+class WorkerAgent:
+    async def run(self, task: str) -> dict:
+        result = await self.execute(task)
+        return {
+            "summary": await self.summarize(result, max_tokens=200),  # Short version for orchestrator
+            "full_result_id": await self.store(result),  # Full version stored
+        }
+
+class OrchestratorAgent:
+    async def run(self, goal: str) -> str:
+        # Orchestrator sees summaries only
+        worker_summaries = await asyncio.gather(*[
+            worker.run(subtask) for worker, subtask in self.plan(goal)
+        ])
+        
+        # Full results retrieved only if needed for final synthesis
+        return await self.synthesize([s["summary"] for s in worker_summaries])
+```
+
+### The cost explosion table
+
+| System type | Typical per-query tokens | Cost multiplier |
+|-------------|--------------------------|-----------------|
+| Simple chatbot | 1,000 | 1× |
+| RAG pipeline | 5,000 | 5× |
+| Single agent (10 steps) | 50,000 | 50× |
+| Multi-agent (4 workers) | 200,000+ | 200× |
+| Multi-agent with unmanaged context | 500,000+ | 500× |
+
+**The cost trap:** Multi-agent systems often consume **4–15× more tokens** than single-agent systems if not designed for efficiency. The orchestrator makes multiple LLM calls for decomposition and aggregation on top of every worker call.
+
+### Durable execution — the cost-reliability trade-off
+
+Without checkpointing, any failure in a long multi-agent workflow means restarting from scratch and paying full cost again.
+
+**Slack's approach (Temporal):** Their multi-agent escalation system uses Temporal for durable workflow execution. Failed agents **resume exactly where they stopped** rather than restarting. This prevents paying double for any failure.
+
+**Railway's approach:** Caches successful steps to prevent re-execution on retries. Each step runs once and only once, even if the overall workflow fails later.
+
+```python
+# Without checkpointing: failure at step 8 of 10 = pay for all 10 again
+results = []
+for i, step in enumerate(pipeline_steps):
+    result = await execute_step(step)   # If this fails, restart from 0
+    results.append(result)
+
+# With checkpointing: failure at step 8 = resume from step 8
+import shelve
+
+def run_with_checkpoint(steps: list, checkpoint_file: str):
+    with shelve.open(checkpoint_file) as checkpoint:
+        for i, step in enumerate(steps):
+            key = f"step_{i}"
+            if key in checkpoint:
+                print(f"Step {i}: loaded from checkpoint")
+                continue  # Skip — already done, don't pay again
+            
+            result = execute_step(step)
+            checkpoint[key] = result  # Save before next step
+            print(f"Step {i}: completed and checkpointed")
+```
+
+---
+
+## Infrastructure Cost Factors
+
+### Compute vs. API
+
+Running your own inference vs. using API:
+
+| Factor | Self-hosted | API (Anthropic/OpenAI) |
+|--------|-------------|------------------------|
+| Upfront | H100 GPU: $30K–$80K | $0 |
+| Per-token cost | Low at volume | Pay-as-you-go |
+| Break-even | ~5M tokens/day | Below break-even |
+| Maintenance | DevOps team needed | None |
+| Model updates | Manual | Automatic |
+| Best for | Very high volume, specific models | Most production systems |
+
+**For most enterprises:** API is cheaper until you're running millions of tokens per day per dedicated GPU.
+
+### Regional deployment for latency
+
+```python
+# AWS Bedrock cross-region inference profiles reduce latency for global users
+# Anthropic API: single endpoint, globally distributed
+
+# For sub-100ms latency requirements:
+# 1. Deploy close to users (edge functions)
+# 2. Use streaming (TTFT matters more than total time for perceived speed)
+# 3. Use smaller models (Haiku is 3-5× faster than Opus per token)
+# 4. Pre-warm caches for your region's peak hours
+```
+
+---
+
+## Real-World Numbers
+
+### What companies actually spent and saved
+
+| Company | Before | After | Method | Savings |
+|---------|--------|-------|--------|---------|
+| Care Access | Baseline | 86% less | Prompt caching (static medical records) | 86% |
+| PGA Tour | — | $0.25/article | Model routing + batching | 95% vs manual |
+| Riskspan | ~$4,500/deal | &lt;$50/deal | Context pruning + right-sized models | 99% |
+| nib (health insurer) | Human agents | $22M savings | Chat deflection (60%) | $22M documented |
+| Developer (solo) | $720/month | $72/month | Prompt caching | 90% |
+| CBRE | 12s SQL queries | 4s | Async + query optimization | 67% latency |
+| Robinhood | 55s P90 | &lt;1s P90 | Hierarchical tuning + LoRA | 98% latency |
+
+### The 1,200 deployment findings (ZenML, 2025)
+
+From analysis of 1,200 production LLM deployments:
+
+1. **Context engineering is now the primary differentiator** between teams that ship reliable LLM systems and those that struggle.
+2. **Constraint-based architectures outperform capability expansion.** Teams that strictly define what agents can do consistently outperform teams that give agents maximum flexibility.
+3. **Leaner contexts produce better reasoning.** This is counterintuitive but consistent across deployments.
+4. **Infrastructure engineering matters more than model selection.** The same model behind good infra (caching, batching, checkpointing, async) outperforms a better model behind poor infra.
+5. **Hybrid systems (LLM + deterministic rules + traditional ML) consistently outperform LLM-only approaches** on cost, reliability, and performance.
+
+---
+
+## The Production Readiness Checklist
+
+Before deploying any LLM agent system to production, every item in this list should be answered:
+
+**Cost governance:**
+- [ ] Cost-per-query estimated and budgeted
+- [ ] Cost ceiling per user/session enforced (prevent GetOnStack-style spirals)
+- [ ] Billing alerts at 50%, 80%, 100% of budget
+- [ ] Infinite loop detection and circuit breaker
+- [ ] Per-feature cost attribution (know which features are expensive)
+
+**Token optimization:**
+- [ ] Prompt caching implemented for system prompt + tool definitions
+- [ ] Cache hit rate monitored (&gt;60% = good; &lt;20% = something is wrong)
+- [ ] Context pruning strategy defined (rolling window or summarization)
+- [ ] Model routing implemented (cheap models for simple steps)
+- [ ] Output length constraints set (max_tokens ceiling)
+- [ ] Tool outputs compressed before being appended to context
+
+**Latency:**
+- [ ] Latency budget defined per user-facing interaction (&lt;2s? &lt;4s?)
+- [ ] Async throughout the call stack
+- [ ] Independent steps parallelized
+- [ ] Streaming enabled for frontend
+- [ ] Caches pre-warmed before peak hours
+
+**Reliability:**
+- [ ] Checkpointing for long multi-step workflows
+- [ ] Retry with exponential backoff
+- [ ] Fallback model configured
+- [ ] Circuit breaker on provider failures
+- [ ] Graceful degradation path (what happens if LLM is down?)
+
+**Observability:**
+- [ ] Per-request token usage logged (input, output, cache_read, cache_write)
+- [ ] Per-step latency tracked
+- [ ] Cost attributed to specific features and workflows
+- [ ] Error rate and failure mode monitoring
+- [ ] Faithfulness/quality tracking (eval in CI)
+
+---
+
+## Building the Business Case
+
+This section is for the conversation with leadership about deploying a custom agentic solution.
+
+### The ROI framework
+
+Three variables define the business case:
+
+```
+ROI = (Task value × Automation rate × Volume) - (LLM cost + Infra cost + Maintenance)
+```
+
+**Task value** = what it costs to do this manually (human time, error rate, opportunity cost)
+**Automation rate** = what % of tasks the agent handles without human intervention
+**Volume** = how many tasks per month
+
+**Real example — Ramp's expense policy agent:**
+- Task value: ~$50 of finance team time per expense review
+- Volume: 100,000 reviews/month
+- Automation rate: 65% (agent handles autonomously)
+- Manual cost: 100,000 × 0.65 × $50 = $3.25M/month saved
+- Agent cost (optimized): ~$50,000/month
+- Net ROI: ~$3.2M/month
+
+### Common objections and answers
+
+**"LLM costs are unpredictable"**
+
+They are, without guardrails. With token budgets, cost ceilings per session, model routing, and caching, costs become as predictable as any other infrastructure. Set a maximum tokens-per-session limit and enforce it hard.
+
+**"Our data is too sensitive for a cloud LLM"**
+
+Options exist at every sensitivity level:
+- Data anonymization before sending to API
+- Private cloud deployments (AWS Bedrock private VPC, Azure OpenAI private endpoint)
+- On-premise deployment (Ollama + open-source models for the most sensitive cases)
+- Hybrid: route sensitive data to on-premise, general queries to cloud API
+
+**"The agent will make mistakes"**
+
+All agents make mistakes. The question is whether the mistake rate is acceptable and what the cost of a mistake is. Design: (1) human-in-the-loop for high-stakes decisions, (2) shadow mode before live deployment, (3) reversibility in all agent actions, (4) automatic escalation when confidence is low.
+
+Zalando found ~10% attribution errors even with Claude Sonnet. Their solution: architectural guardrails (not prompt-based), validation layer, human review for cases flagged as uncertain.
+
+**"We need it to work 100% of the time"**
+
+No software works 100% of the time. Design for graceful degradation: when the agent fails, what happens? The answer should be "falls back to the current manual process" — not "the system is down."
+
+**"It's not ready for production"**
+
+The question isn't whether the technology is ready — DoorDash, Stripe, Airbnb, and Ramp are in production at scale. The question is whether *your specific use case and data* is well-served by it. Run a 4-week shadow mode pilot: agent runs alongside human process, outputs compared. Data from that pilot answers the question objectively.
+
+### The shadow mode pilot framework
+
+```
+Week 1–2: Agent runs in parallel with human process (hidden)
+           Log all inputs, agent outputs, human decisions
+           
+Week 3:    Compare agent vs human for each case
+           Calculate: accuracy, failure rate, edge case coverage
+           
+Week 4:    Present data to stakeholders
+           If accuracy > threshold: expand
+           If accuracy < threshold: diagnose, improve, rerun
+```
+
+**Ramp's approach:** Shadow mode on 100% of expense approvals before any live deployment. LLM Judge compares agent predictions to actual human decisions. Live activation only after reaching defined accuracy thresholds. Zero risk during evaluation period.
+
+### Cost projection template
+
+```python
+def calculate_agent_cost(
+    monthly_tasks: int,
+    avg_tokens_per_task: int,
+    model_input_price_per_mtoken: float,  # e.g., 3.0 for Sonnet
+    model_output_price_per_mtoken: float,  # e.g., 15.0 for Sonnet
+    avg_output_tokens: int,
+    cache_hit_rate: float = 0.0,
+    batch_eligible_fraction: float = 0.0,
+) -> dict:
+    """Calculate monthly agent costs with optimization levers."""
+    
+    # Baseline cost
+    input_cost = (monthly_tasks * avg_tokens_per_task / 1_000_000) * model_input_price_per_mtoken
+    output_cost = (monthly_tasks * avg_output_tokens / 1_000_000) * model_output_price_per_mtoken
+    baseline = input_cost + output_cost
+    
+    # Apply prompt caching (90% discount on cached portion)
+    CACHE_FRACTION = 0.7  # Assume 70% of input tokens are cacheable
+    cached_input_cost = input_cost * CACHE_FRACTION * (1 - cache_hit_rate) * 1.25  # Write
+    cached_input_cost += input_cost * CACHE_FRACTION * cache_hit_rate * 0.1           # Read
+    uncached_input_cost = input_cost * (1 - CACHE_FRACTION)
+    optimized_input = cached_input_cost + uncached_input_cost
+    
+    # Apply batch discount
+    batch_discount = batch_eligible_fraction * 0.5  # 50% off batch tokens
+    final_input = optimized_input * (1 - batch_discount)
+    final_output = output_cost * (1 - batch_discount * 0.3)  # Smaller effect on output
+    
+    total = final_input + final_output
+    
+    return {
+        "monthly_cost_baseline": round(baseline, 2),
+        "monthly_cost_optimized": round(total, 2),
+        "savings_pct": round((1 - total / baseline) * 100, 1),
+        "cost_per_task": round(total / monthly_tasks, 4),
+    }
+
+# Example: Customer support agent
+result = calculate_agent_cost(
+    monthly_tasks=50_000,
+    avg_tokens_per_task=15_000,      # ~15 agent turns × 1,000 tokens/turn
+    model_input_price_per_mtoken=3.0,  # Claude Sonnet 4.6
+    model_output_price_per_mtoken=15.0,
+    avg_output_tokens=500,
+    cache_hit_rate=0.75,              # System prompt + tools: 75% cache hit
+    batch_eligible_fraction=0.0,      # Real-time: no batch
+)
+print(result)
+# → {'monthly_cost_baseline': $2,625, 'monthly_cost_optimized': $890, 'savings_pct': 66.1%}
+```
+
+---
+
+## The Cost Failure Catalog
+
+1. **No cost ceiling per session** → infinite agent loops destroy budgets (GetOnStack: $127/week to $47K in 4 weeks)
+2. **Prompt caching not implemented** → paying full input price on every turn for identical system prompts
+3. **Tool outputs uncompressed** → single API call result adds 50,000 tokens to every subsequent turn
+4. **Wrong model for the task** → using Opus for simple extraction that Haiku would handle fine
+5. **Context not pruned** → context rot beyond 50K-150K tokens, AND you're paying for tokens that degrade performance
+6. **Multi-agent without output summarization** → orchestrator accumulates full worker outputs, context explodes
+7. **No checkpointing** → failure at step 8 of 10 means paying for 10 steps again
+8. **Synchronous agent calls** → parallelizable work runs sequentially; 4× latency for no reason
+9. **Verbose output prompts** → "Provide a comprehensive analysis..." → 5× more output tokens than needed
+10. **No semantic cache** → identical user questions hit LLM every time; 20-40% cache hit rate left on the table
+11. **Batch-eligible work run synchronously** → 50% cost reduction not taken for nightly/async workflows
+12. **Fine-tuning deferred indefinitely** → paying $5/MTok for Opus on a task where fine-tuned Haiku would cost $0.05/MTok
+13. **No model routing** → every step hits the same expensive frontier model regardless of complexity
+14. **Shadow mode skipped** → costly production failures that a 4-week parallel pilot would have caught
+
+---
+
+## Summary — The Optimization Priority Stack
+
+Start here (highest ROI, lowest effort):
+
+1. **Prompt caching** — implement first. 80-90% savings on input tokens immediately.
+2. **Context pruning** — define your rolling window size. Prevents cost runaway and improves quality.
+3. **Model routing** — Haiku for simple steps, Sonnet for most, Opus only when needed.
+4. **Semantic cache** — for repetitive queries. 20-40% of LLM calls eliminated.
+5. **Batch API** — for async/nightly work. Free 50% discount.
+6. **Parallelization** — for independent agent steps. Same cost, lower latency.
+7. **Output constraints** — max_tokens + explicit brevity instructions. 2-5× output token reduction.
+8. **Fine-tuning** — for high-volume, well-defined tasks. 60-90% cost reduction, better quality.
+
+> **The single most underused optimization: prompt caching.** Most teams haven't implemented it. It requires one API field change and saves 80-90% on input tokens for any system with a stable system prompt or tool catalog.
+
+---
+
+**Resources:**
+- [Anthropic Prompt Caching Docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- [ZenML LLMOps Database — 1,200 Deployments](https://www.zenml.io/blog/what-1200-production-deployments-reveal-about-llmops-in-2025)
+- [JetBrains — Efficient Context Management for LLM Agents](https://blog.jetbrains.com/research/2025/12/efficient-context-management/)
+- [Hamel Husain — Your AI Product Needs Evals](https://hamel.dev/blog/posts/evals/)
+- [Applied LLMs — A Year of Building with LLMs](https://applied-llms.org/)
+- [FinOps in the Age of AI — CPO's Guide](https://www.finout.io/blog/finops-in-the-age-of-ai-a-cpos-guide-to-llm-workflows-rag-ai-agents-and-agentic-systems)
+- [Trajectory Reduction for LLM Agents](https://arxiv.org/html/2509.23586v2)
