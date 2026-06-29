@@ -1,0 +1,657 @@
+---
+title: "MongoDB Deep Dive — Storage, Indexing, Concurrency, and Scaling"
+date: "2026-06-29"
+excerpt: "How MongoDB works: WiredTiger storage engine, document model, BSON, write concern, read concern, replica sets, sharding with consistent hashing, and the aggregation pipeline."
+tags: ["database", "mongodb", "internals", "sharding", "replication", "indexing", "series:db-internals"]
+---
+
+# MongoDB Deep Dive
+
+MongoDB is a document database built on a flexible BSON (Binary JSON) model. This post goes deep on the storage engine, concurrency model, indexing strategies, replication, and sharding internals.
+
+---
+
+## The Document Model
+
+MongoDB stores **documents** — self-describing BSON objects — in **collections** (analogous to tables, but schema-free).
+
+```javascript
+// A document in the "users" collection
+{
+  "_id": ObjectId("507f1f77bcf86cd799439011"),
+  "name": "Alice",
+  "email": "alice@example.com",
+  "address": {                        // Embedded document
+    "city": "Singapore",
+    "country": "SG"
+  },
+  "tags": ["premium", "verified"],   // Array
+  "created_at": ISODate("2026-01-01")
+}
+```
+
+**Why documents over rows:**
+- No JOINs needed for co-located data (embed vs. reference is the key design decision)
+- Schema-free → evolving data structures without ALTER TABLE
+- Nested documents and arrays modeled naturally
+- Trade-off: denormalization → larger documents, update anomalies
+
+### BSON
+
+Documents stored as **BSON** (Binary JSON) — typed, compact binary encoding:
+- Supports types JSON doesn't: Date, ObjectId, Binary, Decimal128, etc.
+- Length-prefixed for O(1) document traversal
+- ObjectId = 12 bytes: 4-byte timestamp + 5-byte random + 3-byte counter → globally unique, roughly sortable by time
+
+---
+
+## WiredTiger Storage Engine
+
+MongoDB's default storage engine since 3.2. Key characteristics:
+
+### Storage Format
+
+WiredTiger stores each collection in a separate B-tree file (`.wt` extension). Documents are stored as key-value pairs where:
+- Key = RecordId (64-bit sequential ID, or the `_id` field for the `_id` index)
+- Value = BSON document
+
+```
+WiredTiger files on disk:
+/data/db/collection-0-<id>.wt     ← collection data (B-tree)
+/data/db/index-1-<id>.wt          ← _id index
+/data/db/index-2-<id>.wt          ← user-defined indexes
+/data/db/WiredTiger.wt            ← WT metadata
+/data/db/journal/WiredTigerLog.*  ← write-ahead log
+```
+
+### B-Tree Structure (WiredTiger)
+
+WiredTiger uses a **B-tree with copy-on-write (CoW) pages**:
+- Leaf pages hold actual data; internal pages hold routing keys
+- On write, a dirty page is modified in memory and written to disk as a new page (not in-place)
+- **Reconciliation** periodically merges in-memory changes with disk pages
+
+### Compression
+
+WiredTiger compresses data on disk:
+```
+Default: snappy compression for collections, prefix compression for indexes
+Options: none, snappy (default), zlib (more compression), zstd (best ratio)
+```
+
+### Cache (The WiredTiger Cache)
+
+WiredTiger maintains its own cache (separate from OS page cache). Default: 50% of RAM - 1 GB.
+
+```javascript
+// Check cache usage
+db.serverStatus().wiredTiger.cache
+```
+
+**Cache eviction:** When cache fills past the eviction trigger (~80%), WiredTiger starts evicting pages. Write-heavy workloads can trigger "cache pressure" — watch `cache bytes dirty` and eviction stats.
+
+---
+
+## Write-Ahead Log (Journal)
+
+Like PostgreSQL, WiredTiger journals every write before acknowledging it. Journal writes happen every 50ms (default), or on `j: true` write concern.
+
+```
+Write path:
+1. Write to WiredTiger cache (in-memory page modified)
+2. If j:true: journal entry flushed to disk
+3. Acknowledged to client
+4. WiredTiger checkpoint periodically flushes dirty pages to disk files
+```
+
+Checkpoints happen every 60 seconds (default) or when journal grows to 2 GB.
+
+---
+
+## Concurrency
+
+### Document-Level Locking
+
+WiredTiger uses **document-level optimistic concurrency control** (MVCC):
+
+```
+Reader A: reads document D at timestamp T1
+Writer B: updates document D at timestamp T2 (T2 > T1)
+  → B creates new version of D, not blocking A
+Reader A: still sees version at T1 (snapshot isolation)
+After A commits/finishes: old version D@T1 is garbage collected
+```
+
+MongoDB uses **intent locks** at the collection and database level, and document-level MVCC for the actual data:
+
+```
+Global lock: S/X/IS/IX
+Database lock: S/X/IS/IX
+Collection lock: S/X/IS/IX (for DDL)
+Document: MVCC (no explicit lock held for reads)
+```
+
+### Transactions (Multi-Document ACID)
+
+MongoDB 4.0+ supports multi-document ACID transactions:
+
+```javascript
+const session = client.startSession();
+session.startTransaction({
+  readConcern: { level: "snapshot" },
+  writeConcern: { w: "majority" },
+});
+
+try {
+  const accounts = db.collection("accounts");
+  
+  await accounts.updateOne(
+    { _id: "alice" }, 
+    { $inc: { balance: -100 } },
+    { session }
+  );
+  
+  await accounts.updateOne(
+    { _id: "bob" },
+    { $inc: { balance: 100 } },
+    { session }
+  );
+  
+  await session.commitTransaction();
+} catch (e) {
+  await session.abortTransaction();
+  throw e;
+} finally {
+  await session.endSession();
+}
+```
+
+**Caution:** Transactions have a 60-second runtime limit. They're designed for short, targeted operations — not batch processing. Long transactions in MongoDB should be restructured as atomic per-document operations.
+
+---
+
+## Write Concern and Read Concern
+
+These are MongoDB's primary levers for tuning consistency vs. latency.
+
+### Write Concern
+
+Controls when a write is acknowledged:
+
+```javascript
+// w: 0 — fire and forget (fastest, no durability guarantee)
+db.collection.insertOne(doc, { writeConcern: { w: 0 } });
+
+// w: 1 — acknowledged by primary (default)
+db.collection.insertOne(doc, { writeConcern: { w: 1 } });
+
+// w: "majority" — acknowledged by majority of replica set nodes
+// Safe: survives primary failure without data loss
+db.collection.insertOne(doc, { writeConcern: { w: "majority" } });
+
+// j: true — journal flushed to disk before ack (durable against crash)
+db.collection.insertOne(doc, { writeConcern: { w: 1, j: true } });
+```
+
+**Production recommendation:** Use `w: "majority"` for critical writes. For high-throughput low-importance writes (logs, metrics), `w: 1` is acceptable.
+
+### Read Concern
+
+Controls the consistency level for reads:
+
+```javascript
+// "local" — reads from current node, may not reflect latest committed writes
+db.collection.find(query).readConcern("local");
+
+// "majority" — only reads data confirmed by majority (monotonic reads guarantee)
+db.collection.find(query).readConcern("majority");
+
+// "linearizable" — reads reflect all prior acknowledged writes (linearizable)
+// Warning: requires reading from primary, much slower
+db.collection.find(query).readConcern("linearizable");
+
+// "snapshot" — used in transactions; snapshot at transaction start
+```
+
+---
+
+## Indexing
+
+### _id Index (Always Present)
+
+Every collection has a unique B-tree index on `_id`. ObjectId is roughly time-ordered so inserts are sequential — good for B-tree performance.
+
+### Single Field Index
+
+```javascript
+db.users.createIndex({ email: 1 });   // Ascending
+db.users.createIndex({ score: -1 });  // Descending
+```
+
+### Compound Index
+
+```javascript
+db.orders.createIndex({ user_id: 1, created_at: -1 });
+// Supports queries on: user_id alone, user_id + created_at
+// Does NOT efficiently support: created_at alone (no leftmost prefix)
+```
+
+**ESR Rule for compound indexes:** For compound indexes, order fields as: **E**quality first, **S**ort next, **R**ange last.
+
+```javascript
+// Query: user_id = X AND status = 'active' AND created_at > Y ORDER BY score
+// ESR order: { user_id: 1, status: 1, score: 1, created_at: 1 }
+//            Equality   Equality  Sort    Range
+```
+
+### Multikey Index
+
+Automatically created when indexing an array field. MongoDB creates an index entry for each array element:
+
+```javascript
+db.products.createIndex({ tags: 1 });
+// Document: { tags: ["electronics", "phone", "apple"] }
+// → 3 index entries created
+```
+
+**Limitation:** Cannot have two multikey fields in the same compound index (both are arrays).
+
+### Text Index
+
+Full-text search over string content:
+
+```javascript
+db.articles.createIndex({ title: "text", body: "text" });
+db.articles.find({ $text: { $search: "mongodb sharding" } });
+
+// With weights
+db.articles.createIndex(
+  { title: "text", body: "text" },
+  { weights: { title: 10, body: 1 } }
+);
+```
+
+Only one text index per collection. Doesn't support language-specific stemming as well as Elasticsearch.
+
+### Geospatial Index
+
+```javascript
+db.places.createIndex({ location: "2dsphere" });
+// GeoJSON point queries
+db.places.find({
+  location: {
+    $near: {
+      $geometry: { type: "Point", coordinates: [103.8, 1.35] },
+      $maxDistance: 5000  // meters
+    }
+  }
+});
+```
+
+### Wildcard Index
+
+Indexes all fields in a document (or a subdocument):
+
+```javascript
+// Index all fields in userProfile subdocument
+db.users.createIndex({ "userProfile.$**": 1 });
+// Useful for dynamic schemas where you can't predict which fields will be queried
+```
+
+### Partial Index
+
+Like PostgreSQL, index only matching documents:
+
+```javascript
+db.orders.createIndex(
+  { status: 1, created_at: 1 },
+  { partialFilterExpression: { status: "pending" } }
+);
+// Only active/pending orders indexed — smaller, faster
+```
+
+### Index Hints and Explain
+
+```javascript
+// Force index
+db.collection.find(query).hint({ field: 1 });
+
+// Explain
+db.collection.find(query).explain("executionStats");
+// Look for: totalDocsExamined vs totalKeysExamined vs nReturned
+// Ideal: nReturned ≈ totalKeysExamined, totalDocsExamined as low as possible
+```
+
+---
+
+## Aggregation Pipeline
+
+MongoDB's primary tool for server-side data transformation:
+
+```javascript
+db.orders.aggregate([
+  // Stage 1: Filter
+  { $match: { status: "completed", created_at: { $gte: ISODate("2026-01-01") } } },
+  
+  // Stage 2: Add computed field
+  { $addFields: { month: { $month: "$created_at" } } },
+  
+  // Stage 3: Group and aggregate
+  { $group: {
+    _id: { user: "$user_id", month: "$month" },
+    total_spent: { $sum: "$amount" },
+    order_count: { $count: {} }
+  }},
+  
+  // Stage 4: Sort
+  { $sort: { total_spent: -1 } },
+  
+  // Stage 5: Limit
+  { $limit: 100 },
+  
+  // Stage 6: Lookup (LEFT JOIN)
+  { $lookup: {
+    from: "users",
+    localField: "_id.user",
+    foreignField: "_id",
+    as: "user_info"
+  }},
+  
+  // Stage 7: Reshape
+  { $project: { 
+    user_name: { $arrayElemAt: ["$user_info.name", 0] },
+    total_spent: 1,
+    order_count: 1
+  }}
+]);
+```
+
+**Performance tip:** Place `$match` and `$limit` stages as early as possible. MongoDB can use indexes for `$match` stages at the start of a pipeline.
+
+### `$lookup` (JOIN) Performance
+
+`$lookup` performs a LEFT OUTER JOIN. For performance:
+- The `from` collection should have an index on `foreignField`
+- Prefer `$lookup` with pipeline (available in 3.6+) for filtered joins
+- For high-cardinality joins, consider embedding the data instead
+
+---
+
+## Replication
+
+### Replica Set Architecture
+
+A replica set has:
+- **One primary** (accepts all writes)
+- **One or more secondaries** (replicate from primary via oplog)
+- Optional **arbiter** (votes in elections, holds no data)
+
+```javascript
+// Initiate a replica set
+rs.initiate({
+  _id: "rs0",
+  members: [
+    { _id: 0, host: "mongo1:27017", priority: 2 },    // Preferred primary
+    { _id: 1, host: "mongo2:27017", priority: 1 },
+    { _id: 2, host: "mongo3:27017", priority: 1 }
+  ]
+});
+
+// Check status
+rs.status();
+rs.printReplicationInfo();      // oplog size and time
+```
+
+### The Oplog (Operations Log)
+
+The oplog is a **capped collection** in the `local` database. Every write to the primary is recorded as an oplog entry. Secondaries tail the oplog and apply operations in order.
+
+```javascript
+// Check oplog entries
+use local
+db.oplog.rs.find().sort({ $natural: -1 }).limit(5)
+// Each entry has: ts (timestamp), op (i/u/d/c), ns (namespace), o (operation)
+```
+
+**Oplog size matters:** If a secondary falls too far behind the oplog window (e.g., for maintenance), it can no longer replicate and must be resynced from scratch. The default oplog is 5% of free disk space.
+
+### Elections
+
+When a primary is unavailable, the replica set holds an election:
+1. Secondaries detect missing heartbeats (10s timeout)
+2. Secondary calls election (must have majority votes available)
+3. New primary elected (highest priority + most up-to-date oplog wins)
+4. Old primary, if it recovers, becomes a secondary (MongoDB uses term numbers to prevent stale primaries from accepting writes)
+
+**Minimum 3 members** for fault tolerance (a majority = 2/3 can still elect a primary when one is down).
+
+---
+
+## Sharding
+
+Sharding is MongoDB's approach to horizontal scaling. Data is distributed across **shard nodes** based on a **shard key**.
+
+### Architecture
+
+```
+                    ┌─────────────────┐
+Clients ────────────│  mongos routers │───── 
+                    └────────┬────────┘     │
+                             │              │
+              ┌──────────────┼──────────────┐
+              │              │              │
+        ┌─────┴──────┐ ┌─────┴──────┐ ┌────┴───────┐
+        │  Shard 1   │ │  Shard 2   │ │  Shard 3   │
+        │ (Replica   │ │ (Replica   │ │ (Replica   │
+        │  Set)      │ │  Set)      │ │  Set)      │
+        └────────────┘ └────────────┘ └────────────┘
+                             │
+                    ┌────────┴────────┐
+                    │  Config Servers │
+                    │ (chunk metadata)│
+                    └─────────────────┘
+```
+
+### Consistent Hashing for Shard Key Distribution
+
+MongoDB partitions data into **chunks** (default 128 MB). Each chunk covers a range of shard key values and is assigned to one shard.
+
+**Hashed sharding:** MongoDB hashes the shard key value and distributes chunks evenly. This is a form of **consistent hashing**:
+
+```javascript
+// Hashed sharding — even distribution, no hotspots
+sh.shardCollection("mydb.orders", { user_id: "hashed" });
+```
+
+**Range sharding:** Chunks are contiguous key ranges. Good for range queries, but creates hotspots with monotonically increasing keys:
+
+```javascript
+// Range sharding — enables range queries, but sequential inserts → hotspot
+sh.shardCollection("mydb.events", { created_at: 1 });
+// Problem: all new writes go to the newest chunk → one shard handles all writes
+
+// Better: use a compound shard key to spread writes
+sh.shardCollection("mydb.events", { region: 1, created_at: 1 });
+```
+
+### Choosing a Shard Key — Critical Decision
+
+The shard key is **immutable once set** (cannot be changed without resharding). Bad shard key choice = permanent pain.
+
+| Property | What to look for |
+|----------|-----------------|
+| **Cardinality** | High cardinality — enough unique values to form many chunks |
+| **Frequency** | Even distribution — avoid keys where one value covers 80% of data |
+| **Monotonicity** | Avoid monotonically increasing (timestamps, ObjectIds) for range sharding — all inserts go to one shard |
+| **Query pattern** | Include the shard key in most queries (targeted queries vs. scatter-gather) |
+
+```javascript
+// Check shard distribution
+db.orders.getShardDistribution()
+// Want chunks evenly distributed across shards
+```
+
+### Chunk Splitting and Migration
+
+MongoDB automatically:
+1. Splits chunks when they exceed ~128 MB
+2. Migrates chunks between shards to balance
+
+**Balancer** runs in the background moving chunks. This causes I/O spikes — schedule balancer window if needed:
+
+```javascript
+// Restrict balancer to off-peak hours
+sh.setBalancerState(true);
+db.settings.updateOne(
+  { _id: "balancer" },
+  { $set: { activeWindow: { start: "02:00", stop: "06:00" } } },
+  { upsert: true }
+);
+```
+
+### Zone Sharding (Data Locality)
+
+Pin certain data ranges to specific shards (for compliance, latency):
+
+```javascript
+// Add zone to a shard
+sh.addShardToZone("shard1", "US");
+sh.addShardToZone("shard2", "EU");
+
+// Assign a key range to a zone
+sh.addTagRange(
+  "mydb.users",
+  { region: "US", user_id: MinKey },
+  { region: "US", user_id: MaxKey },
+  "US"
+);
+// All US users → shard1
+```
+
+---
+
+## Bloom Filters in MongoDB
+
+WiredTiger uses **Bloom filters** in its cache layer to quickly determine whether a page might contain a key before fetching from disk. This avoids unnecessary disk reads for non-existent keys (important for point lookups on sparse data).
+
+MongoDB also uses Bloom filter–like pruning in the aggregation pipeline for certain join operations.
+
+**How a Bloom filter works:**
+```
+Insert "alice": hash("alice") → positions [2, 7, 11] → set bits 2, 7, 11
+Insert "bob":   hash("bob")   → positions [1, 5, 8]  → set bits 1, 5, 8
+
+Query "alice": hash("alice") → positions [2, 7, 11] → all set? YES → "maybe exists"
+Query "carol": hash("carol") → positions [3, 7, 12] → bit 3 not set → "definitely NOT exists"
+```
+
+- False negatives: **impossible** (never says "not exists" when it does)
+- False positives: **possible** (says "maybe exists" when it doesn't)
+- Tunable via filter size (more bits = lower false positive rate)
+- No delete (without special structures)
+
+---
+
+## ACID Guarantees
+
+| Property | MongoDB (standalone operation) | MongoDB (multi-document transaction) |
+|----------|-------------------------------|--------------------------------------|
+| **Atomicity** | Single document writes are atomic | Full ACID across documents |
+| **Consistency** | Schema validation rules, unique indexes | All ACID constraints apply |
+| **Isolation** | Snapshot isolation (WiredTiger MVCC) | Snapshot isolation |
+| **Durability** | With j:true write concern | With w:majority + j:true |
+
+**Single-document atomicity is the design goal:** When you embed related data in one document, all updates to it are atomic without needing transactions.
+
+---
+
+## CAP Theorem Position
+
+MongoDB replica sets are **CP** (Consistent + Partition Tolerant) with default settings:
+- Writes go to primary only
+- On network partition: minority partition stops accepting writes (no stale primary accepting writes)
+- Reads from secondary can be stale (use `readConcern: "majority"` for consistency)
+
+With `w: 1` and reads from secondaries, MongoDB behaves more like **AP** (Available + Partition Tolerant) — it stays up but may return stale data.
+
+---
+
+## Scaling Limits and Challenges
+
+| Challenge | Symptom | Solution |
+|-----------|---------|---------|
+| Write hotspot | One shard doing all writes | Change shard key to include high-cardinality prefix |
+| Scatter-gather queries | Every query hits every shard | Include shard key in all queries |
+| Large documents | Slow updates, OOM risk | Enforce 16 MB limit; split large arrays |
+| Oplog window exhaustion | Secondary must resync | Increase oplog size; fix slow secondaries |
+| Index selectivity | Full collection scans | Use `explain()` to verify index use |
+| Unbounded arrays | `$push` without `$slice` | Always bound arrays growing over time |
+| Fanout on write | Social feed pattern | Use materialized feed or bucket pattern |
+
+---
+
+## Common Design Patterns
+
+### Embedded vs. Referenced Documents
+
+```javascript
+// EMBED when: data is accessed together, 1:few relationship, infrequent updates
+{ _id: "order1", items: [{ sku: "A", qty: 2 }, { sku: "B", qty: 1 }] }
+
+// REFERENCE when: data changes frequently, 1:many:many, large sub-documents
+{ _id: "order1", user_id: ObjectId("...") }  // users stored separately
+```
+
+### Bucket Pattern (Time-Series)
+
+Group related time-series events into buckets to reduce document count and improve compression:
+
+```javascript
+// Instead of one document per reading:
+// { sensor: "s1", ts: T1, val: 23.1 }  ← millions of documents
+
+// Bucket by hour:
+{
+  sensor: "s1",
+  hour: ISODate("2026-01-01T12:00:00Z"),
+  count: 60,
+  sum: 1386.0,  // For computing averages
+  readings: [23.1, 23.2, 23.0, ...]  // 60 readings
+}
+// 60× fewer documents, better compression, faster aggregation
+```
+
+### Outlier Pattern
+
+For documents with extremely high cardinality arrays (viral posts with millions of likes):
+
+```javascript
+// Normal post
+{ _id: "post1", likes: [user1, user2, ...], like_count: 150 }
+
+// Viral post - don't store all likes in one doc
+{ _id: "post1", likes: [user1, user2, ...first_1000], like_count: 2000000, has_overflow: true }
+// Overflow documents
+{ _id: "post1_overflow_1", post_id: "post1", likes: [user1001, ...user2000] }
+```
+
+---
+
+## When to Choose MongoDB
+
+**Strong fit:**
+- Flexible/evolving schemas (product catalog with varying attributes)
+- Hierarchical data that maps naturally to documents
+- Content management, blogs, user profiles
+- Event logging and time-series (with bucket pattern)
+- Rapid prototyping where schema evolves often
+
+**Not a strong fit:**
+- Complex multi-table transactions (use PostgreSQL)
+- Data that's inherently relational with many JOINs
+- Need strong schema enforcement from day one
+- Write-heavy workloads with wide partitions → Cassandra
+
+---
+
+**Next in this series:** [Cassandra Deep Dive](/blog/db-cassandra-deep-dive) | [Database Comparison & Interview Cheatsheet](/blog/db-comparison-cheatsheet)

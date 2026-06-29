@@ -1,0 +1,552 @@
+---
+title: "Databases Interview Cheatsheet — PostgreSQL vs MongoDB vs Cassandra"
+date: "2026-06-29"
+excerpt: "Quick-revision guide covering everything that matters for database interviews: storage engines, consistency models, CAP positions, indexing, sharding, consistent hashing, Bloom filters, LSM trees, B-trees, failure modes, and system design decision framework."
+tags: ["database", "postgresql", "mongodb", "cassandra", "system-design", "interview", "consistent-hashing", "lsm-tree", "series:db-internals"]
+---
+
+# Databases Interview Cheatsheet
+
+This is the quick-revision guide for everything database-related in system design and backend engineering interviews. Use it alongside the deep-dive posts for each database.
+
+---
+
+## The Big Picture Comparison
+
+| Property | PostgreSQL | MongoDB | Cassandra |
+|----------|-----------|---------|-----------|
+| **Model** | Relational (rows/tables) | Document (BSON/JSON) | Wide-column |
+| **Storage engine** | Custom heap + WAL | WiredTiger (B-tree, MVCC) | LSM Tree + SSTables |
+| **ACID** | Full (single node) | Per-document atomic; multi-doc via transactions | Per-partition atomic; limited multi-partition |
+| **Replication** | Primary-standby (WAL streaming) | Replica set (oplog) | Leaderless (token ring) |
+| **Scaling** | Vertical + read replicas + partitioning + Citus | Sharding (mongos + config servers) | Linear horizontal (consistent hashing + vnodes) |
+| **Consistency** | Strong (default) | Tunable (write/read concern) | Tunable (ONE to ALL) |
+| **CAP** | CA (single node) / CP (replicated) | CP (primary + replica set) | AP (default) / CP with CL=ALL |
+| **Write performance** | Good (WAL) | Good (WiredTiger) | Excellent (LSM sequential writes) |
+| **Read performance** | Excellent (B-tree, index scans) | Good (B-tree + multikey) | Good (bloom-filter optimized) |
+| **Schema** | Strict (DDL) | Flexible (schema-free) | Semi-strict (CQL, query-first design) |
+| **Ideal for** | OLTP, complex queries, ACID | Flexible documents, evolving schema | Massive writes, time-series, multi-region |
+
+---
+
+## Storage Engine Internals
+
+### PostgreSQL — Heap + WAL
+
+```
+Write path:
+→ WAL record (sequential) → Buffer pool (in-memory page)
+→ CHECKPOINT: dirty pages flushed to heap file (8KB pages)
+
+Page structure: header | item pointers | free space | tuples
+Each tuple: t_xmin, t_xmax (MVCC), null bitmap, data
+
+MVCC: readers see a snapshot of committed transactions
+VACUUM: reclaims dead tuples (old row versions)
+```
+
+**Key insight:** PostgreSQL never updates rows in-place. Every UPDATE creates a new tuple version. VACUUM is the cost of this MVCC design.
+
+### WiredTiger (MongoDB) — B-Tree + Copy-On-Write
+
+```
+Write path:
+→ Journal (50ms batched fsync, or on j:true) 
+→ WiredTiger cache (modified B-tree pages)
+→ Checkpoint (every 60s): dirty pages reconciled to .wt files
+
+B-tree pages: copy-on-write (never modified in place)
+MVCC: each reader sees a consistent snapshot (like PostgreSQL)
+```
+
+### LSM Tree (Cassandra) — Log-Structured Merge Tree
+
+```
+Write path:
+→ CommitLog (sequential append, sync on write)
+→ MemTable (in-memory, sorted by partition key)
+→ Flush (when MemTable full): SSTable on disk (immutable)
+
+Read path:
+→ MemTable → Bloom filter check per SSTable → Index → Data.db
+
+Compaction: merges SSTables, resolves versions, removes tombstones
+```
+
+**Why LSM writes are faster than B-tree:** Every write is a sequential append. B-tree updates may require random page reads and in-place modifications (page splits, etc.).
+
+**Why B-tree reads are faster than LSM:** B-tree locates data in O(log N) in one file. LSM may need to check multiple SSTables.
+
+---
+
+## Indexing Quick Reference
+
+### B-Tree (PostgreSQL, MongoDB, WiredTiger)
+
+- **Good for:** equality, range, prefix LIKE, ORDER BY
+- **Structure:** balanced tree, O(log N) read/write
+- **Not good for:** full-text, multi-valued fields
+- **Leftmost prefix rule:** compound index `(a, b, c)` supports `WHERE a=?`, `WHERE a=? AND b=?`, but NOT `WHERE b=?` alone
+
+### GIN (PostgreSQL) — Inverted Index
+
+- **Good for:** arrays, JSONB, full-text search
+- **Structure:** token → set of rows (inverted posting list)
+- **Use with:** `@>` (contains), `@@` (full-text), `ANY()` on arrays
+
+### BRIN (PostgreSQL) — Block Range Index
+
+- **Good for:** naturally ordered large tables (logs, time-series)
+- **Structure:** min/max per block range (~tiny index on 100M-row table)
+- **Not good for:** random access, non-sequential data
+
+### Hash Index
+
+- **Good for:** equality only, O(1) lookup
+- **Not good for:** range queries, ordering
+
+### Geospatial (MongoDB 2dsphere, PostgreSQL PostGIS)
+
+- **For:** proximity search, polygon containment
+- **MongoDB:** `$near`, `$geoWithin`, `$geoIntersects`
+- **PostgreSQL:** `ST_DWithin()`, `ST_Contains()`, `ST_Intersects()`
+
+### Cassandra "Indexes"
+
+Cassandra doesn't have secondary indexes in the traditional sense. Options:
+1. **Partition key** = the primary "index" (what you must query by)
+2. **Clustering keys** = sorted within a partition (efficient range within partition)
+3. **SASI index** / **SAI (Storage-Attached Index)** — secondary, use carefully (full cluster scan for unselective indexes)
+4. **Materialized views** — maintain a separate table with different partition key
+5. **Separate lookup table** — design pattern: create a table specifically for the query
+
+---
+
+## Consistent Hashing
+
+**The problem it solves:** In a naive hash ring (`node = hash(key) % N`), adding or removing 1 node remaps almost all keys. Consistent hashing reduces this to `K/N` keys being remapped (where K=total keys, N=number of nodes).
+
+### How It Works
+
+```
+1. Map both nodes AND keys onto the same hash ring (0 to 2^64)
+2. Each key is owned by the first node clockwise from its hash position
+
+Ring (simplified):
+  0 ─── Node A (token: 0)
+        ↓ owns [0, 2500)
+2500 ── Node B (token: 2500)
+        ↓ owns [2500, 5000)
+5000 ── Node C (token: 5000)
+        ↓ owns [5000, 7500)
+7500 ── Node D (token: 7500)
+        ↓ owns [7500, 2^64→0)
+
+hash("user123") = 3200 → owned by Node C (next clockwise at 5000)
+```
+
+**Adding Node E (token: 3750):**
+- Only keys in [2500, 3750] move from Node C → Node E
+- All other nodes unaffected
+
+**Virtual nodes:** Each physical node has multiple token positions. On failure/add, load spreads evenly across many nodes instead of one neighbor absorbing all.
+
+### Where It's Used
+
+- **Cassandra:** primary data distribution mechanism
+- **DynamoDB:** same (Amazon's Dynamo paper originated this)
+- **Redis Cluster:** hash slots (16,384 slots, consistent hashing variant)
+- **CDN:** which edge node handles a request
+- **Load balancers:** consistent routing of user sessions
+
+---
+
+## Bloom Filters
+
+**The problem they solve:** "Is this key definitely NOT in this SSTable/set?" If yes, skip the disk read. If maybe, do the read.
+
+### Mechanics
+
+```
+Bloom filter with m=20 bits, k=3 hash functions:
+
+Insert "alice": 
+  h1("alice") = 3, h2("alice") = 7, h3("alice") = 11
+  → set bits 3, 7, 11
+
+Insert "bob":
+  h1("bob") = 1, h2("bob") = 5, h3("bob") = 15
+  → set bits 1, 5, 15
+
+Query "alice":
+  h1("alice")=3 ✓, h2("alice")=7 ✓, h3("alice")=11 ✓ → "maybe"
+
+Query "carol":  
+  h1("carol")=3 ✓, h2("carol")=2 ✗ → bit 2 not set → "DEFINITELY NOT" → skip SSTable
+```
+
+**Properties:**
+- Space-efficient: ~10 bits/element for 1% false positive rate
+- O(k) insert and query (k = number of hash functions)
+- No false negatives (if key exists, always says "maybe")
+- ~1% false positives (may say "maybe" for non-existent key)
+- No deletion (use Counting Bloom Filter variant)
+- Not serializable as a key-value store (keys can't be enumerated)
+
+**Where it's used:**
+- **Cassandra:** one Bloom filter per SSTable, loaded in memory
+- **RocksDB / LevelDB:** same
+- **Chrome browser:** safe browsing list
+- **Bitcoin:** SPV wallet transaction filtering
+- **CDN:** "has this object been requested before?" (decide whether to cache)
+- **Database query planning:** join order optimization
+
+---
+
+## Replication Models
+
+### Primary-Standby (PostgreSQL)
+
+```
+Writes → Primary → WAL → Standby (read-only)
+Failover: promote standby → fence old primary → redirect clients
+```
+
+- Strong consistency if synchronous
+- Standby is readable (slightly stale with async)
+- Failover takes 10-30 seconds (Patroni automates this)
+
+### Replica Set (MongoDB)
+
+```
+Writes → Primary → Oplog → Secondaries (async replication)
+Election: if primary unavailable, secondaries vote (need majority)
+```
+
+- Single primary at any time
+- Majority vote required for election (needs 3+ members for fault tolerance)
+- Write concern controls durability
+
+### Leaderless (Cassandra)
+
+```
+Writes → Any node (coordinator) → All RF replicas (async)
+Reads → Any node (coordinator) → CL nodes queried → merge results
+No single primary, no elections
+```
+
+- All nodes are equal
+- Can accept writes during network partition (AP)
+- Repairs/hints needed for convergence
+
+---
+
+## CAP Theorem
+
+```
+     Consistent      Available
+          \              /
+           \     CA    /   ← RDBMS (single node, no partition tolerance)
+            \         /
+             \       /
+        CP ── ∙ ── AP
+       /      |      \
+      /    (can't    \
+Cassandra    have     MongoDB
+Zookeeper    all 3)  (default)
+HBase              (Redis, 
+                    Cassandra with CL=1)
+```
+
+**Real-world nuance:** Modern systems choose where on the CP-AP spectrum to sit, and can tune dynamically:
+- Cassandra `CL=QUORUM` = CP
+- Cassandra `CL=ONE` = AP
+- MongoDB `readConcern=majority` = CP
+- MongoDB `readConcern=local` + secondary reads = AP
+
+---
+
+## ACID vs BASE
+
+| Property | ACID | BASE |
+|----------|------|------|
+| Full name | Atomic, Consistent, Isolated, Durable | Basically Available, Soft State, Eventually Consistent |
+| Guarantees | Strong: transaction either fully applies or doesn't | Weak: system will be consistent eventually |
+| Latency | Higher (coordination needed) | Lower (no coordination) |
+| Availability | Lower on partition (must choose C) | Higher (accepts writes even if inconsistent) |
+| Examples | PostgreSQL, MySQL, SQL Server | Cassandra, DynamoDB, CouchDB |
+| MongoDB position | ACID for single-doc + multi-doc transactions | BASE with eventual consistency for async replicated reads |
+
+---
+
+## Concurrency Control Models
+
+### Two-Phase Locking (2PL)
+
+Classic relational approach. Transaction acquires all locks before any releases:
+- Phase 1 (Growing): acquire locks
+- Phase 2 (Shrinking): release locks (no new acquisitions)
+
+```
+T1: LOCK(A) → LOCK(B) → READ(A) → WRITE(B) → UNLOCK(A) → UNLOCK(B)
+```
+
+Prevents all anomalies but can deadlock. PostgreSQL uses 2PL for table-level DDL locks.
+
+### MVCC (PostgreSQL, MongoDB, CockroachDB)
+
+Multiple versions of data kept simultaneously. Readers see a **snapshot** at transaction start — never blocked by writers. Writers create new versions; old versions cleaned up later.
+
+```
+PostgreSQL tuple: (t_xmin=100, t_xmax=0, data="old_value")
+After update by T200: old tuple (t_xmin=100, t_xmax=200) + new tuple (t_xmin=200, t_xmax=0, data="new_value")
+T150 still reads old tuple; T300 reads new tuple
+```
+
+### Optimistic Concurrency Control (OCC)
+
+Assume no conflicts, don't lock. Check for conflicts only at commit:
+1. Read phase: execute transaction, record reads
+2. Validation: check if any read data was modified by concurrent transaction
+3. Write phase: if no conflict, commit; else abort and retry
+
+WiredTiger uses OCC internally at the storage level.
+
+### Serializable Snapshot Isolation (SSI — PostgreSQL SERIALIZABLE)
+
+Tracks read-write dependencies between transactions (predicate locks). If a cycle is detected (would cause non-serializable outcome), one transaction is aborted.
+
+---
+
+## Failover Strategies
+
+### PostgreSQL
+
+```
+Manual:
+1. Detect primary failure (monitoring, pg_ctl status)
+2. Fence old primary (STONITH — Shoot The Other Node In The Head)
+3. Promote standby: pg_ctl promote / touch $PGDATA/failover.signal
+4. Update DNS or connection pool to point to new primary
+5. Old primary rejoins as new standby (pg_rewind to resync)
+
+Automated with Patroni:
+- Uses etcd/Consul for distributed leader lock
+- Automatic primary failure detection
+- Automatic promotion + reconfiguration
+- API for health checks and switchovers
+```
+
+### MongoDB
+
+```
+Automatic replica set election:
+1. Secondaries detect missing primary heartbeats (10s)
+2. Secondary calls election (needs majority)
+3. Elected node becomes primary
+4. Old primary demotes to secondary on recovery
+Total time: ~10-30 seconds
+
+mongos (for sharded clusters): retries writes on primary failure
+```
+
+### Cassandra
+
+```
+No failover needed (no primary):
+1. Node failure detected via gossip + Phi failure detector
+2. Coordinator routes writes to remaining replicas
+3. Hinted handoff stores writes for dead node
+4. On recovery: hints replayed + repair if needed
+5. Application sees no downtime (if CL < ALL)
+```
+
+---
+
+## Sharding Strategies
+
+### Hash-Based Sharding
+
+```
+shard = hash(key) % N (naive) 
+shard = consistent_hash(key) (production)
+```
+
+- Even distribution (all keys map uniformly)
+- No range queries (keys scrambled)
+- Used by: Cassandra (Murmur3Partitioner), MongoDB (hashed sharding), Redis Cluster
+
+### Range-Based Sharding
+
+```
+key ranges [A-M] → Shard 1
+key ranges [N-Z] → Shard 2
+```
+
+- Enables range queries
+- Risk: sequential keys (timestamps) create hotspots
+- Used by: MongoDB (range sharding), DynamoDB (sort key ranges), HBase
+
+### Directory-Based Sharding
+
+Lookup table: `key → shard_id`
+- Maximum flexibility (can move any key to any shard)
+- Lookup table is a single point of failure
+- Usually overkill unless you need fine-grained control
+
+### Composite Sharding (Cassandra)
+
+Partition key → hash → which nodes | Clustering key → sorting within partition
+
+```sql
+-- Shard by (region, user_id), sort by timestamp within each partition
+PRIMARY KEY ((region, user_id), event_ts)
+```
+
+---
+
+## Key System Design Questions
+
+### "How does Cassandra handle a write when a replica is down?"
+
+The coordinator (node that received the write) writes to available replicas and stores a **hint** for the unavailable node. When the node recovers, hints are replayed. For extended outages (> `max_hint_window_in_ms`, default 3h), the node must be re-synced via repair.
+
+### "How do you prevent stale reads in a distributed database?"
+
+Options:
+1. **Read from primary only** (MongoDB primary, PG primary) — always current but no read scaling
+2. **Read concern = majority** (MongoDB) — only returns data committed on majority
+3. **CL = QUORUM on both read and write** (Cassandra) — overlap guarantees you read at least one node with latest
+4. **Synchronous replication** (PG `synchronous_commit=on`) — all reads from primary see committed writes from standby
+
+### "What happens during a network partition in Cassandra?"
+
+Cassandra (AP by default) allows both sides of the partition to continue accepting writes:
+- Side A keeps writing (CL=ONE or CL=QUORUM within side A)
+- Side B keeps writing (same)
+- On partition healing: last-write-wins reconciliation (by timestamp)
+- Anti-entropy repair ensures eventual convergence
+
+### "Why does PostgreSQL get slower as data grows?"
+
+- Heap files grow → more pages → larger B-tree indexes → deeper trees → more page reads
+- VACUUM must process more dead tuples
+- Autovacuum might struggle to keep up on high-write tables
+- Solutions: partitioning (each partition is smaller), archiving old data, higher `fillfactor` to leave room for updates
+
+### "When would you pick Cassandra over PostgreSQL?"
+
+- Write volume is the primary concern (Cassandra: 50K+ writes/s per node)
+- Data is naturally partitioned by a stable, high-cardinality key
+- Multi-region active-active is required
+- Access patterns are simple (no complex joins)
+- Time-series data with predictable TTL
+
+### "How do you design a social media feed at scale?"
+
+The classic fan-out problem:
+- **Fan-out on write (push):** When user posts, write to every follower's feed. Fast reads, expensive writes for high-follower accounts.
+- **Fan-out on read (pull):** Each feed read queries who the user follows, fetches recent posts. Simple writes, expensive reads.
+- **Hybrid:** Push to most followers, pull for celebrity accounts (>1M followers).
+
+Storage: Cassandra with partition key = `(user_id)`, clustering = `(timestamp DESC)` for feed. Redis sorted sets for real-time feed.
+
+### "Explain how Bloom filters reduce disk I/O in LSM trees"
+
+When a read arrives in Cassandra:
+1. Check MemTable (in-memory) — no I/O
+2. For each SSTable: check its **Bloom filter** (also in-memory) — "Is this partition key definitely NOT here?"
+   - If Bloom says "definitely not": **skip the SSTable** — no disk read
+   - If Bloom says "maybe": read the index → data file
+3. Without Bloom filters: every SSTable would require a disk read to prove the key isn't there
+4. With Bloom filters (~1% false positive rate): 99% of "not found" SSTables skipped entirely
+
+### "What's a hot partition and how do you fix it?"
+
+A hot partition occurs when one partition key receives disproportionately more traffic than others.
+
+**Cassandra example:** Using `user_id` as partition key, but one user (a celebrity) has 1000× more activity. All writes for that user go to the same nodes.
+
+**Fixes:**
+1. **Partition key spreading:** Add a suffix bucket — `PRIMARY KEY ((user_id, bucket), event_ts)` where `bucket = random(0,N)`. Reads must query all N buckets.
+2. **Pre-aggregation:** Don't store individual events, store aggregated counts per time window.
+3. **Table redesign:** If the hot partition is inherent to the data, the data model needs redesign.
+
+### "How does MVCC prevent the lost update problem?"
+
+```
+Lost update without MVCC/locking:
+T1: reads balance = $1000
+T2: reads balance = $1000
+T1: writes balance = $900 (deducted $100)
+T2: writes balance = $800 (deducted $200) ← overwrites T1, T1's deduction lost
+
+With MVCC + optimistic locking (detect-conflict-at-commit):
+T1: reads version 1 of balance = $1000
+T2: reads version 1 of balance = $1000
+T1: commits version 2 = $900 (success)
+T2: tries to commit version 2 = $800, sees version already at 2 → CONFLICT → ABORT
+T2 retries: reads version 2 = $900, writes version 3 = $700 ← correct
+```
+
+PostgreSQL SSI handles this automatically. Application code can use `SELECT FOR UPDATE` for explicit optimistic locking.
+
+---
+
+## Quick Picks — System Design Decision Tree
+
+```
+Need complex JOINs or strict ACID across many rows?
+  → PostgreSQL
+
+Need flexible/evolving document schema with moderate query complexity?
+  → MongoDB
+
+Need massive write throughput, simple access patterns, multi-region active-active?
+  → Cassandra
+
+Need sub-millisecond reads on simple key lookups, caching?
+  → Redis
+
+Need analytics on large datasets, columnar compression?
+  → ClickHouse, BigQuery, Snowflake
+
+Need both OLTP and OLAP on the same data?
+  → TiDB, CockroachDB, or PostgreSQL with TimescaleDB
+
+Need graph relationships (friends-of-friends, recommendations)?
+  → Neo4j, Amazon Neptune
+```
+
+---
+
+## The Things Interviewers Actually Ask
+
+**Storage:**
+- "Explain the difference between an LSM tree and a B-tree." (LSM: sequential writes, Bloom-filter-optimized reads; B-tree: in-place updates, single file for reads)
+- "What is a WAL and why does every database have one?" (Durability: log first, crash recovery replays from last checkpoint)
+- "How does Cassandra's SSTable differ from PostgreSQL's heap file?" (SSTable: immutable, sorted; heap: mutable pages with MVCC versioning)
+
+**Concurrency:**
+- "What is MVCC and why is it better than locking for reads?" (Multiple versions → readers never blocked; writers never block readers)
+- "What isolation level prevents phantom reads?" (REPEATABLE READ in PostgreSQL; SERIALIZABLE everywhere)
+- "What's the difference between a deadlock and a livelock?" (Deadlock: both wait forever; livelock: both keep trying and failing, never blocking)
+
+**Replication:**
+- "Explain split-brain and how to prevent it." (Two nodes both think they're primary; prevent with STONITH fencing and majority quorum requirements)
+- "What's the difference between sync and async replication?" (Sync: zero RPO, higher latency; async: possible data loss on failure, no latency hit)
+
+**Scaling:**
+- "When would you shard vs. partition?" (Shard: data across multiple servers; partition: data within one server/cluster into logical chunks)
+- "What are the trade-offs of consistent hashing?" (Minimal remapping on node change; small hotspot risk around token ranges; solved by vnodes)
+
+**CAP:**
+- "Is MongoDB CP or AP?" (Replica set: CP by default. With secondary reads and no majority readConcern: AP)
+- "Can you build a CA system in practice?" (No: real networks have partitions. CA is a theoretical position for single-node systems)
+
+---
+
+**Deep dives in this series:**
+- [PostgreSQL: Storage, MVCC, Indexing, Replication](/blog/db-postgres-deep-dive)
+- [MongoDB: WiredTiger, Sharding, Aggregation](/blog/db-mongodb-deep-dive)
+- [Cassandra: LSM Tree, Consistent Hashing, Compaction](/blog/db-cassandra-deep-dive)

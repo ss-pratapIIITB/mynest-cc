@@ -1,0 +1,535 @@
+---
+title: "Cassandra Deep Dive — Storage, Consistent Hashing, Compaction, and Scaling"
+date: "2026-06-29"
+excerpt: "How Cassandra achieves linear horizontal scalability: consistent hashing on the ring, the LSM tree storage engine, SSTables, Bloom filters, compaction strategies, tunable consistency, and the leaderless replication model."
+tags: ["database", "cassandra", "internals", "consistent-hashing", "lsm-tree", "bloom-filters", "scaling", "series:db-internals"]
+---
+
+# Cassandra Deep Dive
+
+Cassandra is a wide-column, distributed database designed for write-heavy workloads at massive scale. No single point of failure. Linear scalability. Tunable consistency. This post covers the internals that make it work.
+
+---
+
+## The Data Model
+
+Cassandra is a **wide-column store** — not a simple key-value store, not a relational database. Understanding the data model is prerequisite to everything else.
+
+```
+Keyspace → Table → Partition Key → Clustering Keys → Columns
+```
+
+```sql
+CREATE KEYSPACE my_app WITH REPLICATION = {
+  'class': 'NetworkTopologyStrategy',
+  'dc1': 3,   -- 3 replicas in dc1
+  'dc2': 2    -- 2 replicas in dc2
+};
+
+CREATE TABLE user_activity (
+  user_id   UUID,
+  event_ts  TIMESTAMP,
+  event_type TEXT,
+  payload   TEXT,
+  PRIMARY KEY ((user_id), event_ts, event_type)
+  -- (user_id)          ← partition key: determines which node
+  -- event_ts, event_type ← clustering keys: ordering within a partition
+);
+```
+
+**Partition key** → hashed to determine which nodes own the data
+**Clustering keys** → sorted order within a partition (stored on disk in this order)
+**Partition** → unit of storage and replication; all rows with the same partition key are co-located
+
+**Query constraint:** Cassandra forces queries to specify the partition key (or full primary key). Unbound queries (no partition key) require ALLOW FILTERING, which does a full cluster scan — extremely expensive.
+
+```sql
+-- ✅ Efficient: specifies partition key
+SELECT * FROM user_activity WHERE user_id = ? AND event_ts > ?;
+
+-- ❌ Dangerous: full cluster scan
+SELECT * FROM user_activity WHERE event_type = 'login' ALLOW FILTERING;
+```
+
+**Design principle: model your tables around your queries.** Unlike relational databases, you often create multiple tables (different partition keys, different clustering keys) for different access patterns on the same logical data — query-first design.
+
+---
+
+## Consistent Hashing — The Core Scaling Mechanism
+
+Cassandra uses **consistent hashing** to distribute data across nodes without centralized coordination.
+
+### The Token Ring
+
+Every node in a Cassandra cluster is assigned one or more **tokens** — positions on a 2^64 or 2^128 ring (depending on partitioner). Data is assigned to the node whose token is ≥ the data's hash.
+
+```
+Ring with 4 nodes (tokens simplified):
+
+         Node A (token: 0)
+        /
+    ←───────────────────────→
+   /                          \
+Node D                       Node B
+(token: 7500)               (token: 2500)
+   \                          /
+    ←───────────────────────→
+        \
+         Node C (token: 5000)
+
+Hash("user_123") = 3200 → assigned to Node B (next token ≥ 3200 is 5000... 
+wait, 2500 < 3200 < 5000, so Node C (5000) owns [2501, 5000])
+```
+
+More precisely: each node owns the token range from the previous node's token + 1 to its own token.
+
+### Virtual Nodes (vnodes)
+
+Without vnodes, each node owns one contiguous range. Adding/removing nodes requires transferring that entire range. **Virtual nodes** assign each physical node 256 (or more) token positions distributed around the ring:
+
+```
+Node A owns tokens: [100, 1500, 3200, 6800, ...]  (256 non-contiguous ranges)
+Node B owns tokens: [350, 2100, 4500, 7200, ...]
+Node C owns tokens: [750, 2800, 5100, 7900, ...]
+```
+
+**Why vnodes matter:**
+- When a node is added: it takes small token ranges from many nodes, not all from one
+- When a node fails: its ranges are spread across many nodes, not one node absorbing everything
+- New nodes bootstrap faster (parallel streaming from many sources)
+
+```bash
+# Check token ring
+nodetool ring
+nodetool describering <keyspace>
+
+# See token ranges owned by this node
+nodetool describe
+```
+
+### Partitioners
+
+| Partitioner | Behavior | Use case |
+|------------|----------|----------|
+| **Murmur3Partitioner** | Hash of partition key → token (default) | Most use cases; even distribution |
+| **RandomPartitioner** | MD5 hash → token | Legacy; deprecated |
+| **ByteOrderedPartitioner** | Lexicographic token order | Range scans possible, but hotspots |
+
+**Why Murmur3 by default:** It distributes data evenly across the ring regardless of key distribution. ByteOrderedPartitioner allows range queries (like `WHERE user_id > X`) but creates write hotspots on sequential keys.
+
+---
+
+## Replication
+
+Cassandra replicates each partition to **N** nodes (Replication Factor = N).
+
+### Replication Strategies
+
+**NetworkTopologyStrategy** (production use):
+```sql
+REPLICATION = {
+  'class': 'NetworkTopologyStrategy',
+  'us-east': 3,    -- 3 replicas spread across different racks in us-east
+  'eu-west': 3     -- 3 replicas spread across different racks in eu-west
+}
+```
+Cassandra places replicas on different racks within a data center to survive rack failures.
+
+**SimpleStrategy** (single DC or dev):
+```sql
+REPLICATION = { 'class': 'SimpleStrategy', 'replication_factor': 3 }
+```
+
+### Where Are My Replicas?
+
+For a replication factor of 3, the coordinator finds the node that owns the partition key's token, then walks the ring clockwise to find 2 more nodes (on different racks in NetworkTopologyStrategy).
+
+```python
+# How Cassandra finds replicas:
+token = murmur3_hash(partition_key) % 2**64
+# Starting at token, find the 3 nodes that own this range
+# (wraps around the ring if needed)
+```
+
+---
+
+## Tunable Consistency
+
+Cassandra's most powerful feature. Each read and write can independently tune consistency level.
+
+### Write Consistency Levels
+
+| Level | Description | Nodes required | Notes |
+|-------|-------------|----------------|-------|
+| ONE | Write ack'd by 1 replica | 1 | Fastest, least durable |
+| QUORUM | Majority of replicas | ⌈RF/2⌉ + 1 | Safe default |
+| LOCAL_QUORUM | Majority in local DC | ⌈local_RF/2⌉ + 1 | Multi-DC best practice |
+| ALL | All replicas | RF | Safest, blocks on any failure |
+| EACH_QUORUM | Majority in each DC | ⌈RF/2⌉+1 per DC | Strong cross-DC |
+
+```python
+from cassandra.cluster import Cluster, ConsistencyLevel
+from cassandra.policies import RoundRobinPolicy
+
+session = cluster.connect("my_keyspace")
+
+# Insert with LOCAL_QUORUM consistency
+insert = session.prepare("INSERT INTO user_activity (user_id, event_ts, event_type) VALUES (?, ?, ?)")
+insert.consistency_level = ConsistencyLevel.LOCAL_QUORUM
+session.execute(insert, [user_id, event_ts, event_type])
+```
+
+### Read Consistency Levels
+
+Same levels apply. Read is sent to as many replicas as the level requires, the coordinator picks the latest (by timestamp).
+
+### The Quorum Formula — Strong Consistency
+
+To guarantee **strong consistency** (no stale reads):
+```
+Write CL + Read CL > RF
+```
+
+Example with RF=3:
+- `QUORUM` writes (need 2) + `QUORUM` reads (need 2) = 4 > 3 ✅ → Strongly consistent
+- `ONE` writes (need 1) + `ONE` reads (need 1) = 2 ≤ 3 ❌ → Eventual consistency
+
+**The multi-DC pattern:**
+- Writes: `LOCAL_QUORUM` in local DC
+- Reads: `LOCAL_QUORUM` in local DC
+- Result: strongly consistent within the DC, eventually consistent across DCs
+
+---
+
+## Storage Engine — LSM Tree
+
+Cassandra uses a **Log-Structured Merge Tree (LSM Tree)**, not a B-tree. This is the key reason writes are so fast.
+
+### Write Path
+
+```
+Write → MemTable (in memory) + CommitLog (on disk, sequential append)
+      → When MemTable full: flush to SSTable (on disk, immutable)
+```
+
+```
+1. Write arrives at Cassandra node
+2. Appended to CommitLog (sequential write, very fast, for durability)
+3. Written to in-memory MemTable
+4. Acknowledged to client (once durable in CommitLog)
+5. When MemTable reaches threshold (~32MB): flushed to disk as SSTable
+```
+
+**Why writes are fast:** Every write is a sequential append (CommitLog) plus an in-memory insert (MemTable). No random I/O. No B-tree page splits. No locking on the critical path.
+
+### SSTable (Sorted String Table)
+
+An SSTable is an **immutable, sorted-by-partition-key file** on disk. Once written, it's never modified.
+
+Files for one SSTable:
+```
+my_table-big-Data-ka-1-Data.db        ← actual row data (sorted by partition key)
+my_table-big-Data-ka-1-Index.db       ← sparse index: partition key → byte offset in Data.db
+my_table-big-Data-ka-1-Filter.db      ← Bloom filter (is a partition key in this SSTable?)
+my_table-big-Data-ka-1-Summary.db     ← Sparse index on top of Index.db (for large indexes)
+my_table-big-Data-ka-1-Statistics.db  ← Min/max timestamps, token ranges, row sizes
+my_table-big-Data-ka-1-CompressionInfo.db ← Compression chunk offsets
+my_table-big-Data-ka-1-TOC.txt        ← List of component files
+```
+
+Data in SSTables is compressed in chunks (default: LZ4, configurable to Snappy, Zstd, Deflate).
+
+### Read Path — Where Bloom Filters Matter
+
+Reading a partition key requires checking potentially many SSTables (each write flush creates a new one). Bloom filters make this efficient:
+
+```
+Read for partition key K:
+
+1. Check MemTable (in-memory)
+2. For each SSTable (newest first):
+   a. Query Bloom filter: "Does this SSTable DEFINITELY NOT have K?"
+      → If "definitely not": SKIP this SSTable entirely (no disk I/O)
+      → If "maybe": continue to step b
+   b. Check Summary → Index → Data.db
+3. Merge results from all matching SSTables (last-write-wins by timestamp)
+```
+
+**Bloom filters eliminate 95-99% of SSTable reads** that would return empty. A single partition key lookup touches only the few SSTables that actually contain it.
+
+```
+Bloom filter properties:
+- Size: ~10 bits per key for ~1% false positive rate
+- 0% false negatives: if a key IS in the SSTable, Bloom filter ALWAYS says "maybe"
+- ~1% false positives: says "maybe" when key is NOT there → wastes one disk read
+- Stored in memory at startup (deserialized from Filter.db)
+```
+
+**Key insight:** False positives cause unnecessary disk reads (slightly slower). False negatives would cause data loss. So Bloom filters are tuned to have zero false negatives.
+
+### Compaction — The LSM Tax
+
+As SSTables accumulate, read performance degrades (more files to check) and disk space grows (multiple versions of the same key). **Compaction** merges SSTables, resolves versions, and removes deleted data.
+
+**Why compaction is necessary:**
+- Updates in Cassandra are new writes (not in-place). After 10 updates to a key, 10 SSTables each have one version.
+- Deletes are **tombstones** — special markers. The actual deletion happens at compaction.
+
+### Compaction Strategies
+
+**STCS — SizeTieredCompactionStrategy (default for writes)**
+
+Groups SSTables of similar size, merges them when 4+ of similar size exist:
+
+```
+Tier 1: [10MB, 10MB, 10MB, 10MB] → merge → 40MB SSTable
+Tier 2: [40MB, 40MB, 40MB, 40MB] → merge → 160MB SSTable
+```
+
+Best for: write-heavy workloads where data is rarely updated after writing (time-series, event logs).
+Worst for: random update workloads (many versions, many SSTables, amplified reads).
+
+**LEVCS — LeveledCompactionStrategy (default in Scylladb for reads)**
+
+SSTables organized in levels. Each level is 10× larger than the previous:
+- L0: freshly flushed (any size)
+- L1: fixed 10MB SSTables, up to 10 total (≤100MB)
+- L2: fixed 10MB SSTables, up to 100 total (≤1GB)
+- L3: up to 1,000 SSTables (≤10GB)
+
+Within each level ≥ L1, **no partition overlaps** — each partition exists in exactly one SSTable per level.
+
+```
+Read benefit: For a key, check at most 1 SSTable per level → predictable read performance
+Space overhead: ~110% of actual data size (vs. STCS which can be 2-3× during compaction)
+```
+
+Best for: read-heavy, mixed read-write workloads where reads need predictable performance.
+
+**TWCS — TimeWindowCompactionStrategy**
+
+Keeps SSTables from the same time window together. Old windows are frozen and not recompacted.
+
+Best for: time-series data with TTL. Old data is on immutable SSTables that get bulk-deleted when TTL expires (no tombstone scanning needed).
+
+```sql
+CREATE TABLE metrics (
+  sensor_id UUID,
+  ts        TIMESTAMP,
+  value     DOUBLE,
+  PRIMARY KEY ((sensor_id), ts)
+) WITH CLUSTERING ORDER BY (ts DESC)
+  AND compaction = {
+    'class': 'TimeWindowCompactionStrategy',
+    'compaction_window_unit': 'DAYS',
+    'compaction_window_size': 1
+  }
+  AND default_time_to_live = 2592000;  -- 30 days TTL
+```
+
+### Write and Read Amplification
+
+| Strategy | Write Amplification | Read Amplification | Space Amplification |
+|----------|--------------------|--------------------|---------------------|
+| STCS | Low | High (many SSTables) | High (2-3× during compaction) |
+| LEVCS | High (many rewrites) | Low (1 SSTable per level) | Low (~1.1×) |
+| TWCS | Low | Low (within time window) | Moderate |
+
+---
+
+## Hinted Handoff — Availability During Node Failure
+
+When a replica node is down, the coordinator stores **hints** for the unavailable node:
+
+```
+Write arrives for partition K, replica C is down:
+→ Coordinator writes to replicas A and B (success with CL=QUORUM)
+→ Coordinator also writes a hint: "when C comes back, deliver this write"
+→ When C recovers: coordinator replays hints to C
+```
+
+Hints are stored for `max_hint_window_in_ms` (default 3 hours). If C is down longer, hints are deleted and C must do a **repair** instead.
+
+---
+
+## Anti-Entropy — Repairs
+
+Over time, replicas can diverge (node was down, hint window expired, node.clock drift). **nodetool repair** runs Merkle tree reconciliation:
+
+```bash
+# Full table repair
+nodetool repair -full
+
+# Incremental repair (only repairs unrepaired data)
+nodetool repair
+
+# Sequential repair of all tables
+nodetool repair -pr  # only repairs primary ranges (recommended for regular use)
+```
+
+**How Merkle tree repair works:**
+1. Each node builds a Merkle tree of all partition keys and their hash values
+2. Coordinator compares Merkle trees between replicas
+3. Only the differing subtrees (partitions that diverge) are synchronized
+4. No need to transfer all data — logarithmic comparison
+
+**Run repairs regularly:** Recommended: full repair every `gc_grace_seconds` (default: 10 days) to ensure tombstones are propagated everywhere before being garbage collected.
+
+---
+
+## Tombstones — The Delete Problem
+
+Deletes in Cassandra are **not immediate**. A delete writes a **tombstone** — a marker with a timestamp. The actual data is removed during compaction.
+
+```sql
+-- This doesn't immediately delete; it writes a tombstone
+DELETE FROM user_activity WHERE user_id = ? AND event_ts = ?;
+
+-- Row TTL creates tombstones automatically on expiry
+INSERT INTO events (id, data) VALUES (?, ?) USING TTL 86400;
+```
+
+**Tombstone accumulation is a major operational problem:**
+- Tombstones are returned on reads, forcing Cassandra to scan them
+- Too many tombstones in a partition → `TombstoneOverflowException`
+- Tombstones take disk space until compaction runs after `gc_grace_seconds`
+
+```yaml
+# In cassandra.yaml
+gc_grace_seconds: 864000  # 10 days default
+# Tombstones are NOT removed from disk until gc_grace_seconds passes
+# (to ensure all replicas see the delete before it's purged)
+```
+
+**Best practices to avoid tombstone hell:**
+- Avoid `DELETE` inside loops (use TTL instead for time-bounded data)
+- Use TWCS with TTL for time-series (automatic deletion at window close)
+- Monitor: `nodetool tpstats` shows tombstone warnings in read logs
+
+---
+
+## Failure Detection and Gossip
+
+Cassandra nodes discover each other and detect failures via a **gossip protocol** — each node periodically exchanges state (load, token ranges, schema version, status) with 1-3 random peers. Information propagates exponentially.
+
+**The Phi Accrual Failure Detector:**
+
+Instead of a binary "up/down," Cassandra assigns each node a **suspicion level (φ)** based on heartbeat timing. If φ exceeds a threshold (default 8), the node is marked DOWN.
+
+```bash
+# Check cluster state
+nodetool status
+# UN = Up Normal, DN = Down, UJ = Up Joining, UL = Up Leaving
+```
+
+---
+
+## CAP Theorem Position
+
+Cassandra is designed as an **AP system** (Available + Partition Tolerant) in its default configuration:
+- No single point of failure → always available for reads and writes
+- On network partition: nodes on both sides keep accepting writes (possible divergence)
+
+However, with `CONSISTENCY ALL`, Cassandra becomes **CP** (it blocks rather than accepting potentially stale writes).
+
+With `LOCAL_QUORUM`: strongly consistent within a DC, AP across DCs.
+
+Cassandra uses **BASE** semantics:
+- **B**asically Available
+- **S**oft state
+- **E**ventually consistent
+
+---
+
+## Scaling
+
+### Adding Nodes (The Key Advantage)
+
+```bash
+# Add a new node — it joins the ring automatically
+# Uses vnodes: takes token ranges from multiple existing nodes
+# New node streams data from current owners in parallel
+
+# Monitor streaming progress
+nodetool netstats
+
+# After streaming complete:
+nodetool status  # Should show new node as UN
+```
+
+Linear scalability: doubling nodes roughly doubles read/write throughput and storage capacity.
+
+### Removing Nodes
+
+```bash
+# Graceful removal (node is UP)
+nodetool decommission  # run on the leaving node
+# Streams its data to remaining nodes, then leaves ring
+
+# Remove a dead node (node is DOWN and won't come back)
+nodetool removenode <host-id>
+```
+
+### Scaling Reads
+
+- Add read replicas by increasing Replication Factor
+- Route reads to nearest replica using `LOCAL_QUORUM`
+- Speculative execution: coordinator sends same read to multiple replicas, uses first response
+
+```yaml
+# In cassandra.yaml
+speculative_execution_policy:
+  class: ConstantSpeculativeExecutionPolicy
+  delay_in_ms: 99       # Send speculative request if no reply after 99ms
+  max_attempts: 3
+```
+
+### Scaling Writes
+
+Cassandra excels at write scaling because:
+- Every write is a sequential CommitLog append + MemTable insert
+- Writes distribute across all nodes (no single primary)
+- No coordination between replicas needed for writes (unless CL=ALL)
+
+Practical limits: ~50,000-100,000 writes/second/node is achievable with proper hardware.
+
+---
+
+## Common Operational Pitfalls
+
+1. **Large partitions** — a partition that grows unboundedly (user feed, chat history without bucketing) causes uneven load and slow reads. Keep partitions under 100MB / 100K rows.
+
+2. **Tombstone flooding** — deletes without proper TTL strategy. Causes `TombstoneOverflowException` and query timeouts.
+
+3. **No regular repair** — replicas diverge silently. Data loss risk if node dies before hints replayed.
+
+4. **Poor shard key (partition key) choice** — all traffic to one partition = hot partition = one node does all work.
+
+5. **Cross-partition queries** — `SELECT * FROM table ALLOW FILTERING` causes full cluster scan. Always query by partition key.
+
+6. **Abusing lightweight transactions (LWT)** — `IF NOT EXISTS`, `IF condition` use Paxos; expensive, slow. Use only when truly needed.
+
+7. **schema changes without care** — Cassandra propagates schema changes via gossip; do them one DC at a time.
+
+8. **GC pressure** — Cassandra is Java-based. Large heap sizes with G1GC or ZGC are important for p99 latency.
+
+---
+
+## When to Choose Cassandra
+
+**Strong fit:**
+- Massive write volume (IoT, event streams, clickstreams, logs)
+- Time-series data (user activity, metrics, audit trails)
+- Data that's naturally partitioned by a high-cardinality key
+- Multi-region active-active deployments (Cassandra excels here)
+- Simple key-based lookups at billion-row scale
+
+**Not a strong fit:**
+- Complex queries with JOINs or arbitrary WHERE clauses
+- Strong ACID requirements across multiple rows
+- Frequently changing access patterns (schema is query-driven)
+- Low cardinality data (all data in one partition)
+
+---
+
+**Next in this series:** [Database Comparison & Interview Cheatsheet](/blog/db-comparison-cheatsheet)

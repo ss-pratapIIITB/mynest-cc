@@ -1,0 +1,610 @@
+---
+title: "PostgreSQL Deep Dive — Storage, Indexing, Concurrency, and Scaling"
+date: "2026-06-29"
+excerpt: "How PostgreSQL actually works under the hood: heap file storage, MVCC, VACUUM, B-tree and GIN indexes, query planning, replication, partitioning, and the scaling limits you'll hit in production."
+tags: ["database", "postgresql", "internals", "concurrency", "indexing", "scaling", "series:db-internals"]
+---
+
+# PostgreSQL Deep Dive
+
+PostgreSQL is 30+ years old and still the most trusted general-purpose relational database. This post goes deep on how it actually works — not the SQL syntax, but the internals that determine performance, consistency, and failure behavior.
+
+---
+
+## Storage Architecture
+
+### The Heap File
+
+PostgreSQL stores table data in **heap files** — one or more 1 GB files per table, divided into 8 KB pages (blocks). Within each page, rows are called **tuples**.
+
+```
+Database directory structure:
+$PGDATA/base/<database_oid>/<table_relfilenode>
+$PGDATA/base/<database_oid>/<table_relfilenode>.1   (second 1GB segment)
+$PGDATA/base/<database_oid>/<table_relfilenode>_fsm (free space map)
+$PGDATA/base/<database_oid>/<table_relfilenode>_vm  (visibility map)
+```
+
+Each 8 KB page has a fixed layout:
+
+```
+┌──────────────────────────────────────┐
+│ Page Header (24 bytes)               │  lsn, checksum, flags, pd_lower/upper
+├──────────────────────────────────────┤
+│ Item Pointers (4 bytes each)         │  offset+length of each tuple
+├──────────────────────────────────────┤
+│   (free space grows inward)          │
+├──────────────────────────────────────┤
+│ Tuples (variable length)             │  actual row data
+├──────────────────────────────────────┤
+│ Special Space (index-specific)       │
+└──────────────────────────────────────┘
+```
+
+Every tuple has a **tuple header** containing:
+- `t_xmin` — transaction ID that inserted this row
+- `t_xmax` — transaction ID that deleted/updated this row (0 = still alive)
+- `t_ctid` — physical location of this tuple (for HOT updates)
+- `t_infomask` — flags (null bitmap, frozen status, etc.)
+
+This header is the foundation of MVCC.
+
+### TOAST (The Oversized-Attribute Storage Technique)
+
+Values larger than ~2 KB are automatically moved out of the heap into a separate TOAST table, with a pointer left in the main row. TOAST data can be:
+- **Stored** inline in the TOAST table (compressed or uncompressed)
+- **External** — stored in the TOAST table, not compressed
+- **Main** — kept in-line if it fits, TOASTed if it doesn't
+
+```sql
+-- See TOAST storage for a column
+SELECT attname, attstorage FROM pg_attribute
+WHERE attrelid = 'my_table'::regclass;
+-- 'e' = external, 'x' = compressed, 'm' = main, 'p' = plain
+```
+
+---
+
+## Write-Ahead Logging (WAL)
+
+**Every change goes to the WAL before touching the heap.** This is the core durability mechanism.
+
+```
+WAL write order:
+1. Transaction modifies buffer pool (in memory only)
+2. WAL record written to WAL buffer
+3. On COMMIT: WAL buffer flushed to disk (fsync)
+4. Transaction confirmed to client
+5. Dirty buffer pool pages written to heap files later (checkpoint)
+```
+
+**Why WAL enables point-in-time recovery:** WAL is a sequential log of every change. Given a base backup + WAL files, you can replay any state between backup and now.
+
+WAL also powers **streaming replication** — replicas receive and apply WAL in near real-time.
+
+```sql
+-- Check WAL settings
+SHOW wal_level;   -- minimal, replica, or logical
+SHOW fsync;       -- should be on in production (never turn off)
+SHOW synchronous_commit;  -- off=fast, on=safe, remote_apply=safest
+```
+
+### Checkpoints
+
+PostgreSQL periodically forces all dirty pages to disk (checkpoint). Between checkpoints, recovery replays WAL from the last checkpoint.
+
+```sql
+SHOW checkpoint_timeout;   -- default 5 min
+SHOW max_wal_size;         -- triggers checkpoint if WAL grows this large
+```
+
+**Performance tuning:** If you see "checkpoint occurring too frequently," increase `max_wal_size`. If recovery takes too long after crash, decrease `checkpoint_timeout`.
+
+---
+
+## Multi-Version Concurrency Control (MVCC)
+
+PostgreSQL uses **MVCC** — readers never block writers and writers never block readers. This is achieved by keeping multiple versions of rows in the heap.
+
+### How MVCC Works
+
+```
+Timeline:
+T1 begins (xid=100):  reads row R, sees t_xmin=50, t_xmax=0 → valid
+T2 begins (xid=101):  updates row R
+  → marks old tuple: t_xmax=101
+  → inserts new tuple: t_xmin=101, t_xmax=0
+T1 still sees the OLD tuple (its snapshot is at xid=100)
+T2 commits
+T3 begins (xid=102): sees the NEW tuple (t_xmin=101 committed before T3 started)
+```
+
+The rule: a tuple is **visible** to transaction T if:
+1. `t_xmin` is committed and `t_xmin` ≤ T's snapshot xid
+2. `t_xmax` is either 0 (not deleted) or not committed by T's snapshot
+
+### Transaction Isolation Levels
+
+| Level | Dirty Read | Non-Repeatable Read | Phantom Read | Implementation |
+|-------|-----------|--------------------|--------------|----|
+| Read Uncommitted | Possible* | Possible | Possible | Same as RC in PG |
+| Read Committed | No | Yes | Yes | New snapshot per statement |
+| Repeatable Read | No | No | No** | Snapshot at txn start |
+| Serializable | No | No | No | SSI (predicate locks) |
+
+*PostgreSQL's Read Uncommitted behaves like Read Committed.
+**PostgreSQL's RR prevents phantom reads unlike the SQL standard.
+
+```sql
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+-- or
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+```
+
+**Serializable Snapshot Isolation (SSI):** PostgreSQL's SERIALIZABLE uses predicate locking to detect read-write conflicts between concurrent transactions and aborts one on conflict. True serializability without locking every row.
+
+### VACUUM — The MVCC Tax
+
+Dead tuples (old versions) accumulate in the heap. **VACUUM** reclaims them.
+
+```sql
+-- Manual vacuum with analysis
+VACUUM ANALYZE my_table;
+
+-- Full vacuum — rewrites table, extremely expensive
+VACUUM FULL my_table;
+
+-- Check bloat
+SELECT schemaname, relname, n_dead_tup, n_live_tup, last_autovacuum
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;
+```
+
+**Autovacuum** runs these automatically based on dead tuple thresholds:
+
+```
+autovacuum_vacuum_threshold = 50 (base)
+autovacuum_vacuum_scale_factor = 0.2 (20% of table)
+→ VACUUM triggers when dead_tuples > 50 + 0.2 * n_live_tuples
+```
+
+**Transaction ID Wraparound:** xid is a 32-bit counter (~4B transactions). If it wraps around, old data becomes invisible. VACUUM prevents this by **freezing** old tuples (marking them as "before all transactions").
+
+```sql
+-- Check databases approaching wraparound
+SELECT datname, age(datfrozenxid) FROM pg_database ORDER BY age DESC;
+-- Action required when age > ~2 billion
+```
+
+---
+
+## Locking
+
+PostgreSQL has a multi-level locking system:
+
+### Table-Level Locks
+
+```
+AccessShareLock (SELECT)
+RowShareLock (SELECT FOR UPDATE)
+RowExclusiveLock (INSERT/UPDATE/DELETE)
+ShareUpdateExclusiveLock (VACUUM, CREATE INDEX CONCURRENTLY)
+ShareLock (CREATE INDEX)
+ShareRowExclusiveLock (rare)
+ExclusiveLock (rare DDL)
+AccessExclusiveLock (ALTER TABLE, DROP, TRUNCATE) ← blocks everything
+```
+
+```sql
+-- See current locks
+SELECT pid, mode, granted, relation::regclass
+FROM pg_locks l JOIN pg_stat_activity a ON l.pid = a.pid
+WHERE NOT granted;
+
+-- Detect lock waits
+SELECT wait_event_type, wait_event, query FROM pg_stat_activity WHERE wait_event_type = 'Lock';
+```
+
+### Row-Level Locks
+
+Row locking happens at the tuple level. `SELECT FOR UPDATE` acquires `RowShareLock` on the table and marks tuples with `FOR UPDATE` lock info in the tuple header.
+
+```sql
+SELECT * FROM inventory WHERE product_id = 1 FOR UPDATE;
+-- Blocks other FOR UPDATE on same row
+-- Does NOT block plain SELECT
+```
+
+### Advisory Locks
+
+Application-level locks not tied to any table:
+
+```sql
+SELECT pg_advisory_lock(12345);         -- session-level
+SELECT pg_advisory_xact_lock(12345);    -- transaction-level (auto-released)
+SELECT pg_try_advisory_lock(12345);     -- non-blocking attempt
+```
+
+Use for: preventing duplicate cron job execution, distributed leader election, external resource locking.
+
+### Deadlock Detection
+
+PostgreSQL detects deadlocks and aborts the "cheapest" transaction. Detection runs every `deadlock_timeout` (default 1s).
+
+```sql
+SHOW deadlock_timeout;   -- 1s default
+-- Logged to pg_log when detected
+```
+
+---
+
+## Indexing
+
+### B-Tree (Default)
+
+The standard index — balanced tree of keys pointing to heap locations. Efficient for:
+- Equality: `WHERE col = val`
+- Range: `WHERE col > x AND col < y`
+- Prefix patterns: `WHERE col LIKE 'abc%'`
+- Ordered output (avoids sort): `ORDER BY col`
+
+```sql
+CREATE INDEX idx_users_email ON users(email);
+-- Multicolumn: leftmost prefix rule applies
+CREATE INDEX idx_orders ON orders(user_id, created_at);
+-- Covers WHERE user_id=? AND created_at>? or just WHERE user_id=?
+-- Does NOT cover WHERE created_at>? alone (no leftmost prefix)
+```
+
+**Index-Only Scans:** If the query only needs columns in the index, PostgreSQL reads the index without touching the heap (faster). Visibility checked via the **Visibility Map**.
+
+```sql
+-- Check if index-only scan is being used
+EXPLAIN (ANALYZE, BUFFERS) SELECT email FROM users WHERE id = 1;
+```
+
+### Hash Index
+
+O(1) for equality lookups only. Not useful for ranges. WAL-logged since PostgreSQL 10, now safe for production.
+
+```sql
+CREATE INDEX idx_hash ON users USING HASH (email);
+```
+
+### GIN (Generalized Inverted Index)
+
+Ideal for multi-valued columns: arrays, JSONB, full-text search. Stores a mapping of element → set of rows.
+
+```sql
+-- Full-text search
+CREATE INDEX idx_fts ON articles USING GIN (to_tsvector('english', body));
+SELECT * FROM articles WHERE to_tsvector('english', body) @@ to_tsquery('postgres');
+
+-- JSONB
+CREATE INDEX idx_jsonb ON events USING GIN (payload);
+SELECT * FROM events WHERE payload @> '{"type": "click"}';
+
+-- Array containment
+CREATE INDEX idx_tags ON posts USING GIN (tags);
+SELECT * FROM posts WHERE tags @> ARRAY['postgres', 'internals'];
+```
+
+**GIN vs GiST:** GIN has faster reads, slower writes, larger size. GiST has faster writes, supports more operators (geometric, nearest-neighbor). For text search, GIN is usually right.
+
+### BRIN (Block Range Index)
+
+Tiny index storing min/max per block range. Excellent for naturally ordered columns like timestamps on append-only tables. Doesn't work well for random data.
+
+```sql
+CREATE INDEX idx_created ON logs USING BRIN (created_at);
+-- Index size: ~100KB vs ~500MB B-tree on 100M rows
+```
+
+### Partial Index
+
+Indexes only rows matching a condition — much smaller, faster for targeted queries:
+
+```sql
+-- Only index active users
+CREATE INDEX idx_active ON users(email) WHERE active = true;
+
+-- Only index unfulfilled orders
+CREATE INDEX idx_pending ON orders(created_at) WHERE status = 'pending';
+```
+
+### Expression Index
+
+Index on a computed expression:
+
+```sql
+CREATE INDEX idx_lower_email ON users(lower(email));
+-- Enables: WHERE lower(email) = 'foo@bar.com'
+
+CREATE INDEX idx_year ON events(EXTRACT(year FROM created_at));
+```
+
+### Index Bloat and Maintenance
+
+```sql
+-- Create without locking the table
+CREATE INDEX CONCURRENTLY idx_new ON big_table(column);
+
+-- Check index bloat
+SELECT relname, pg_size_pretty(pg_relation_size(indexrelid)) AS idx_size,
+       idx_scan, idx_tup_read
+FROM pg_stat_user_indexes
+WHERE schemaname = 'public'
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+-- Rebuild bloated index
+REINDEX INDEX CONCURRENTLY idx_old;
+```
+
+---
+
+## Query Planning and Execution
+
+### The Planner
+
+PostgreSQL's query planner chooses the access method and join strategy based on **statistics** (from ANALYZE):
+
+```sql
+-- Table statistics used by planner
+SELECT relname, reltuples, relpages FROM pg_class WHERE relname = 'orders';
+
+-- Column statistics
+SELECT attname, n_distinct, correlation
+FROM pg_stats WHERE tablename = 'orders';
+
+-- Update stats after bulk load
+ANALYZE orders;
+```
+
+### EXPLAIN / EXPLAIN ANALYZE
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT ...;
+```
+
+Key nodes to understand:
+- `Seq Scan` — full table scan. Fine for small tables or wide filters.
+- `Index Scan` — follows index to heap. Each heap access = random I/O.
+- `Index Only Scan` — reads from index only (fastest, when columns covered).
+- `Bitmap Heap Scan` — builds a bitmap of pages to visit, then scans in order. Used when multiple index hits needed.
+- `Hash Join` — builds hash table from smaller relation, probes with larger. Good for large joins.
+- `Merge Join` — requires both inputs sorted. Efficient when inputs are already sorted.
+- `Nested Loop` — for each outer row, scan inner. Good when inner has an index and outer is small.
+
+```sql
+-- Force planner choices for testing
+SET enable_seqscan = off;
+SET enable_hashjoin = off;
+
+-- Reset
+RESET ALL;
+```
+
+---
+
+## Replication
+
+### Streaming Replication (Physical)
+
+WAL shipped in real-time to standby. Standby replays WAL continuously.
+
+```
+Primary → WAL stream → Standby (applies WAL, stays in sync)
+```
+
+```sql
+-- On primary: check replication lag
+SELECT application_name, state, sent_lsn, write_lsn, flush_lsn, replay_lsn,
+       (sent_lsn - replay_lsn) AS replication_lag_bytes
+FROM pg_stat_replication;
+
+-- On standby: check lag
+SELECT now() - pg_last_xact_replay_timestamp() AS replication_lag;
+```
+
+**Synchronous vs. Asynchronous:**
+- Async: primary doesn't wait for standby. Fast, but standby can lag. Failover risks small data loss.
+- Sync: primary waits for standby to confirm WAL written. Zero data loss, ~1× RTT latency hit.
+
+```sql
+-- Enable synchronous replication
+synchronous_standby_names = 'standby1'  -- in postgresql.conf
+```
+
+### Logical Replication
+
+Replicate specific tables or specific operations. Useful for:
+- Cross-version upgrades
+- Selective table replication
+- Feeding a read replica with a subset of data
+
+```sql
+-- Publisher
+CREATE PUBLICATION mypub FOR TABLE orders, users;
+
+-- Subscriber (on replica)
+CREATE SUBSCRIPTION mysub
+CONNECTION 'host=primary port=5432 dbname=mydb user=replicator'
+PUBLICATION mypub;
+```
+
+### Failover
+
+**Manual failover:**
+```bash
+# On standby
+pg_ctl promote -D $PGDATA
+# Or: touch $PGDATA/failover.signal (PG14+)
+```
+
+**Automated failover:** Use Patroni (etcd/Consul/ZooKeeper for leader election), repmgr, or cloud provider managed (Amazon RDS, Google Cloud SQL handle this automatically).
+
+**Failover considerations:**
+- Standby must be caught up before promotion (check `pg_stat_replication`)
+- Clients need to reconnect to new primary (use a connection proxy like PgBouncer or a DNS-based approach)
+- Old primary must be fenced (STONITH) before promoting standby to prevent split-brain
+
+---
+
+## Scaling
+
+### Vertical Scaling
+
+PostgreSQL scales very well vertically. Key knobs:
+
+```sql
+shared_buffers = 25% of RAM           -- Buffer pool
+effective_cache_size = 75% of RAM     -- Hint to planner about OS page cache
+work_mem = 4MB (per sort/hash)        -- Increase for complex sorts
+maintenance_work_mem = 64MB           -- For VACUUM, CREATE INDEX
+max_connections = 100                 -- Each connection = ~5MB overhead
+```
+
+### Connection Pooling
+
+PostgreSQL spawns a process per connection — expensive. Use **PgBouncer** in transaction-mode pooling:
+
+```
+App → PgBouncer (100s of connections) → PostgreSQL (10-20 real connections)
+```
+
+```ini
+# PgBouncer config
+[databases]
+mydb = host=127.0.0.1 port=5432 dbname=mydb
+
+[pgbouncer]
+pool_mode = transaction    # transaction-level pooling
+max_client_conn = 1000
+default_pool_size = 20
+```
+
+### Read Replicas
+
+Route `SELECT` queries to read replicas:
+
+```python
+from sqlalchemy import create_engine
+
+primary = create_engine("postgresql://primary/mydb")
+replica = create_engine("postgresql://replica/mydb")
+
+# Write to primary, read from replica
+with primary.connect() as conn:
+    conn.execute(text("INSERT INTO orders VALUES (...)"))
+
+with replica.connect() as conn:
+    result = conn.execute(text("SELECT * FROM orders WHERE user_id = ?"), [user_id])
+```
+
+**Caution:** Async replication means replica reads can be stale. For reads that must be current (e.g., read-after-write), read from primary or use `synchronous_commit`.
+
+### Table Partitioning
+
+PostgreSQL supports declarative partitioning (PG10+):
+
+```sql
+-- Range partitioning by month
+CREATE TABLE orders (
+    id BIGSERIAL,
+    created_at TIMESTAMPTZ NOT NULL,
+    user_id BIGINT,
+    total NUMERIC(10,2)
+) PARTITION BY RANGE (created_at);
+
+CREATE TABLE orders_2026_01 PARTITION OF orders
+    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+
+CREATE TABLE orders_2026_02 PARTITION OF orders
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+
+-- Queries automatically routed to correct partition (partition pruning)
+EXPLAIN SELECT * FROM orders WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
+-- → Only scans orders_2026_01, not all other partitions
+```
+
+**List partitioning:**
+```sql
+PARTITION BY LIST (region);
+-- Partition for 'US', 'EU', 'APAC'
+```
+
+**Hash partitioning** (for even distribution):
+```sql
+PARTITION BY HASH (user_id);
+```
+
+Benefits: partition pruning speeds queries, older partitions can be detached cheaply, parallel queries across partitions.
+
+### Citus (Sharding)
+
+For true horizontal sharding, **Citus** distributes a PostgreSQL table across multiple nodes:
+
+```sql
+-- Mark a table for distribution
+SELECT create_distributed_table('orders', 'user_id');
+-- All orders for the same user_id go to the same shard node
+-- Cross-shard joins are expensive; co-locate related tables on the same shard key
+```
+
+Citus is best for: multi-tenant SaaS, time-series, analytics. Not great for: complex cross-tenant queries, arbitrary joins.
+
+### OLAP on PostgreSQL
+
+For analytical workloads, consider:
+- **pg_partman** for automated partition management
+- **TimescaleDB** (continuous aggregates, time-series-optimized compression)
+- **Columnar storage** via `pg_mooncake` or Citus columnar
+- **FDW (Foreign Data Wrappers)** to query external sources like S3, Redis, MySQL
+
+---
+
+## ACID Guarantees
+
+| Property | How PostgreSQL implements it |
+|----------|------------------------------|
+| **Atomicity** | WAL ensures all-or-nothing. On crash, uncommitted WAL is discarded. |
+| **Consistency** | Constraints (FK, CHECK, UNIQUE) enforced before commit. |
+| **Isolation** | MVCC gives each transaction a consistent snapshot. SSI prevents anomalies. |
+| **Durability** | WAL fsync'd to disk before commit acknowledged. Even on OS crash, WAL replay recovers. |
+
+---
+
+## CAP Theorem Position
+
+PostgreSQL (standalone) is a **CA system** — consistent and available within a single node, but not partition tolerant. In a replicated setup with synchronous replication, it shifts toward **CP** — it can block on the standby being unreachable rather than accept writes that might lose data.
+
+---
+
+## Common Production Failure Modes
+
+1. **Table bloat from idle transactions** — long-running transactions block VACUUM from reclaiming dead tuples. Monitor `pg_stat_activity` for old transactions.
+2. **Index bloat** — heavy UPDATE workloads bloat B-tree indexes. Use `REINDEX CONCURRENTLY` periodically.
+3. **Transaction ID wraparound** — if autovacuum can't keep up, manual `VACUUM FREEZE` needed. Worst case: emergency shutdown.
+4. **Lock contention on ALTER TABLE** — even adding a column acquires `AccessExclusiveLock`. Use `ALTER TABLE ... SET DEFAULT` + trigger pattern for zero-downtime schema changes.
+5. **Checkpoint storms** — write spikes if `checkpoint_completion_target` is too aggressive.
+6. **`work_mem` × connections OOM** — setting `work_mem = 256MB` with 200 connections can use 50 GB RAM. Set it small globally; raise per-session for known heavy queries.
+
+---
+
+## When to Choose PostgreSQL
+
+**Strong fit:**
+- OLTP with complex queries, joins, transactions
+- Financial data (strict ACID needed)
+- GIS data (PostGIS)
+- JSON/JSONB semi-structured data alongside relational
+- Full-text search without Elasticsearch for moderate scale
+- Multi-tenant SaaS (row-level security, partitioning)
+
+**Not a strong fit:**
+- Need to scale writes beyond ~10K TPS with simple key-value access → consider Cassandra
+- Massive document store with flexible schema → consider MongoDB
+- Millisecond reads on hundreds of millions of simple key lookups → consider Redis or DynamoDB
+
+---
+
+**Next in this series:** [MongoDB Deep Dive](/blog/db-mongodb-deep-dive) | [Cassandra Deep Dive](/blog/db-cassandra-deep-dive) | [Database Comparison & Interview Cheatsheet](/blog/db-comparison-cheatsheet)
