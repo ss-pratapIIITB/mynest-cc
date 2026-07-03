@@ -1,0 +1,140 @@
+---
+title: "NeetCode 150 in Java — Part 5: Heap / Priority Queue"
+date: "2026-07-24"
+excerpt: "Kth Largest Element in a Stream, Last Stone Weight, K Closest Points to Origin, and Kth Largest Element in an Array. The heap's core jobs — streaming K, repeated extremes, and partial selection."
+tags: ["dsa", "java", "heap", "quickselect", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 5
+---
+
+# Heap / Priority Queue
+
+**Part 5.** The heap answers *"K-th," "top/bottom K,"* and *"repeatedly grab the extreme."* Java's `PriorityQueue` is a min-heap by default; reverse the comparator for a max-heap. These four drill the reflexes.
+
+---
+
+## 1. Kth Largest Element in a Stream
+
+> Support `add(val)` returning the k-th largest element so far, across a growing stream.
+
+Keep a **min-heap of size k**. Its root is always the k-th largest, because you evict anything smaller than the current k largest. Each `add` is O(log k).
+
+```java
+class KthLargest {
+    private final PriorityQueue<Integer> heap = new PriorityQueue<>();
+    private final int k;
+
+    public KthLargest(int k, int[] nums) {
+        this.k = k;
+        for (int n : nums) add(n);
+    }
+    public int add(int val) {
+        heap.offer(val);
+        if (heap.size() > k) heap.poll();   // drop the smallest → root stays k-th largest
+        return heap.peek();
+    }
+}
+```
+
+A size-k min-heap holds exactly the k largest values seen; its minimum (the root) is the answer.
+
+- **Time:** O(log k) per add. **Space:** O(k).
+
+**Prep note.** "K-th *largest* → min-heap of size k" (and "k-th smallest → max-heap of size k") is the counterintuitive pairing to memorize — the heap holds the k you care about and its root is the boundary.
+
+---
+
+## 2. Last Stone Weight
+
+> Repeatedly smash the two heaviest stones (`y − x` remains); return the last stone's weight, or 0.
+
+"Repeatedly take the two largest" is a **max-heap**. Poll two, push back their difference if nonzero, until one or zero stones remain.
+
+```java
+public int lastStoneWeight(int[] stones) {
+    PriorityQueue<Integer> heap = new PriorityQueue<>(Collections.reverseOrder()); // max-heap
+    for (int s : stones) heap.offer(s);
+    while (heap.size() > 1) {
+        int y = heap.poll(), x = heap.poll();
+        if (y != x) heap.offer(y - x);       // push the leftover shard
+    }
+    return heap.isEmpty() ? 0 : heap.peek();
+}
+```
+
+`Collections.reverseOrder()` is the idiomatic max-heap; the loop is a direct transcription of the smashing rule.
+
+- **Time:** O(n log n). **Space:** O(n).
+
+**Prep note.** Whenever a problem says "repeatedly operate on the current largest/smallest and reinsert a result," it's a heap simulation — the structure keeps the extreme fresh after each mutation.
+
+---
+
+## 3. K Closest Points to Origin
+
+> Return the `k` points nearest the origin.
+
+Selection by distance. A **max-heap of size k** keyed on squared distance keeps the k closest: when it overflows, evict the *farthest*. Use squared distance — no `sqrt` needed, since it preserves ordering.
+
+```java
+public int[][] kClosest(int[][] points, int k) {
+    PriorityQueue<int[]> heap = new PriorityQueue<>(
+        (a, b) -> (b[0]*b[0] + b[1]*b[1]) - (a[0]*a[0] + a[1]*a[1]));  // max by distance
+    for (int[] p : points) {
+        heap.offer(p);
+        if (heap.size() > k) heap.poll();     // evict the farthest
+    }
+    return heap.toArray(new int[0][]);
+}
+```
+
+Skipping `sqrt` is a small correctness-preserving optimization worth stating.
+
+- **Time:** O(n log k). **Space:** O(k).
+
+**Prep note.** True O(n) average is **Quickselect** — partition around a pivot until the k-th boundary lands in place. Same idea as the next problem; mention it as the optimal selection method.
+
+---
+
+## 4. Kth Largest Element in an Array
+
+> Return the k-th largest element (unsorted array).
+
+A size-k min-heap solves it in O(n log k) — but the optimal average is **Quickselect**: partition around a pivot (Lomuto), and recurse only into the side containing the k-th position. On average each pass halves the work.
+
+```java
+public int findKthLargest(int[] nums, int k) {
+    int target = nums.length - k;             // k-th largest = index target in sorted order
+    int lo = 0, hi = nums.length - 1;
+    while (lo <= hi) {
+        int p = partition(nums, lo, hi);
+        if (p == target) return nums[p];
+        else if (p < target) lo = p + 1;      // recurse into the side holding target
+        else hi = p - 1;
+    }
+    return -1;
+}
+
+private int partition(int[] nums, int lo, int hi) {
+    int pivot = nums[hi], i = lo;
+    for (int j = lo; j < hi; j++)
+        if (nums[j] <= pivot) swap(nums, i++, j);
+    swap(nums, i, hi);
+    return i;                                 // pivot's final sorted position
+}
+private void swap(int[] a, int i, int j) { int t = a[i]; a[i] = a[j]; a[j] = t; }
+```
+
+Because you only recurse into the partition containing the target index, the average cost is O(n), not O(n log n).
+
+- **Time:** O(n) average, O(n²) worst; heap version O(n log k). **Space:** O(1).
+
+**Prep note.** Offer both: heap for simplicity and guaranteed O(n log k), Quickselect for optimal average. A randomized pivot avoids the sorted-input worst case — mention it to show you know the failure mode.
+
+---
+
+## The pattern, in one line
+
+A heap is the tool for *streaming K* (size-k heap, root is the boundary), *repeated extremes* (poll–mutate–reinsert), and *selection* — where **Quickselect** beats the heap on average by partitioning toward the k-th index instead of ordering everything.
+
+Next in **Part 6: Design & Trees** — Task Scheduler, an LRU cache, a mini Twitter, and tree diameter.

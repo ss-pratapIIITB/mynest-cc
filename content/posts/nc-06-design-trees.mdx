@@ -1,0 +1,168 @@
+---
+title: "NeetCode 150 in Java — Part 6: Design & Trees"
+date: "2026-07-25"
+excerpt: "Task Scheduler, Design Twitter, LRU Cache, and Diameter of Binary Tree. Greedy scheduling with counts, composing structures for a feed, the hashmap + doubly-linked-list cache, and return-one-update-a-global."
+tags: ["dsa", "java", "design", "heap", "trees", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 6
+---
+
+# Design & Trees
+
+**Part 6.** Design problems test whether you can **compose known structures** into a working system. Then a tree problem reprising the "return one value, update a global" shape.
+
+Tree node, as before:
+
+```java
+class TreeNode { int val; TreeNode left, right; TreeNode(int v) { val = v; } }
+```
+
+---
+
+## 1. Task Scheduler
+
+> Given tasks and a cooldown `n` between identical tasks, return the minimum time (including idles) to finish all.
+
+The bottleneck is the **most frequent task**: it forces a skeleton of `(maxFreq − 1)` full cooldown frames plus a final slot. Count how many tasks share that max frequency to fill the last frame. The answer is the max of that skeleton size and the raw task count (when there are enough distinct tasks to avoid idling).
+
+```java
+public int leastInterval(char[] tasks, int n) {
+    int[] freq = new int[26];
+    for (char t : tasks) freq[t - 'A']++;
+    int maxFreq = 0, maxCount = 0;
+    for (int f : freq) {
+        if (f > maxFreq) { maxFreq = f; maxCount = 1; }
+        else if (f == maxFreq) maxCount++;
+    }
+    int frameSize = (maxFreq - 1) * (n + 1) + maxCount;   // idle skeleton around the hottest task
+    return Math.max(frameSize, tasks.length);             // but never less than the task count
+}
+```
+
+The formula bypasses simulation entirely — the schedule's length is dictated by the hottest task's frequency.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** A heap-based simulation also works and is easier to *derive* live; the counting formula is the elegant O(n) closed form. Know the greedy reasoning behind `(maxFreq − 1) * (n + 1) + maxCount`.
+
+---
+
+## 2. Design Twitter
+
+> Support `postTweet`, `follow`, `unfollow`, and `getNewsFeed` (10 most recent tweets from self + followees).
+
+**Compose** a map of followees per user and a per-user tweet list with a global timestamp. `getNewsFeed` merges the relevant users' recent tweets with a heap — a k-way merge picking the 10 newest.
+
+```java
+class Twitter {
+    private int time = 0;
+    private final Map<Integer, List<int[]>> tweets = new HashMap<>();   // user -> [(time, tweetId)]
+    private final Map<Integer, Set<Integer>> following = new HashMap<>();
+
+    public void postTweet(int userId, int tweetId) {
+        tweets.computeIfAbsent(userId, k -> new ArrayList<>()).add(new int[]{time++, tweetId});
+    }
+    public void follow(int a, int b)   { following.computeIfAbsent(a, k -> new HashSet<>()).add(b); }
+    public void unfollow(int a, int b) { following.getOrDefault(a, Set.of()).remove(b); }
+
+    public List<Integer> getNewsFeed(int userId) {
+        PriorityQueue<int[]> heap = new PriorityQueue<>((x, y) -> y[0] - x[0]); // newest first
+        Set<Integer> users = new HashSet<>(following.getOrDefault(userId, Set.of()));
+        users.add(userId);                                     // include own tweets
+        for (int u : users)
+            for (int[] t : tweets.getOrDefault(u, List.of())) heap.offer(t);
+
+        List<Integer> feed = new ArrayList<>();
+        while (!heap.isEmpty() && feed.size() < 10) feed.add(heap.poll()[1]);
+        return feed;
+    }
+}
+```
+
+A monotonic timestamp gives a global order; the max-heap merges each source's tweets by recency.
+
+- **Time:** O(T log T) per feed for T candidate tweets. **Space:** O(users + tweets).
+
+**Prep note.** The scalable version pushes only each user's *latest* tweet into the heap, then advances that user's pointer when polled — a true k-way merge that reads only ~10 tweets, not all of them.
+
+---
+
+## 3. LRU Cache
+
+> `get` and `put` in O(1), evicting the least-recently-used key at capacity.
+
+Compose a **HashMap** (O(1) lookup) with a **doubly linked list** (O(1) move/evict). The map points to nodes; the list orders by recency — most-recent at the head, least-recent at the tail. Every access moves a node to the head; eviction removes the tail.
+
+```java
+class LRUCache {
+    private class Node { int key, val; Node prev, next; Node(int k, int v) { key = k; val = v; } }
+    private final Map<Integer, Node> map = new HashMap<>();
+    private final Node head = new Node(0, 0), tail = new Node(0, 0);  // dummy bounds
+    private final int capacity;
+
+    public LRUCache(int capacity) { this.capacity = capacity; head.next = tail; tail.prev = head; }
+
+    public int get(int key) {
+        if (!map.containsKey(key)) return -1;
+        Node n = map.get(key);
+        remove(n); insertFront(n);          // mark most-recently-used
+        return n.val;
+    }
+    public void put(int key, int value) {
+        if (map.containsKey(key)) remove(map.get(key));
+        Node n = new Node(key, value);
+        map.put(key, n); insertFront(n);
+        if (map.size() > capacity) {         // evict LRU = node before tail
+            Node lru = tail.prev;
+            remove(lru); map.remove(lru.key);
+        }
+    }
+    private void remove(Node n)      { n.prev.next = n.next; n.next.prev = n.prev; map.remove(n.key); }
+    private void insertFront(Node n) { n.next = head.next; n.prev = head; head.next.prev = n; head.next = n; map.put(n.key, n); }
+}
+```
+
+Dummy `head`/`tail` sentinels mean insertion and removal never touch a null boundary — no edge cases.
+
+- **Time:** O(1) for `get` and `put`. **Space:** O(capacity).
+
+**Prep note.** This map + doubly-linked-list combo is *the* canonical design problem. `LinkedHashMap` with `accessOrder=true` does it in a few lines — mention it, then implement the manual version to show you understand the mechanics.
+
+---
+
+## 4. Diameter of Binary Tree
+
+> The diameter is the longest path (in edges) between any two nodes.
+
+Reprise of Binary Tree Maximum Path Sum's shape: the recursion **returns a node's height**, while a **global** tracks the widest span. At each node, the path *through* it is `leftHeight + rightHeight`; what it contributes *upward* is `1 + max(left, right)`.
+
+```java
+private int best;
+
+public int diameterOfBinaryTree(TreeNode root) {
+    best = 0;
+    height(root);
+    return best;
+}
+
+private int height(TreeNode node) {
+    if (node == null) return 0;
+    int left = height(node.left), right = height(node.right);
+    best = Math.max(best, left + right);      // path turning at this node (both sides)
+    return 1 + Math.max(left, right);         // height contributed upward (one side)
+}
+```
+
+The returned value (height) differs from the measured value (span) — recognizing that split is the whole trick, same as Max Path Sum.
+
+- **Time:** O(n). **Space:** O(h).
+
+**Prep note.** "Return one thing, update a global with another" now appears three times (Max Path Sum, this, Balanced Tree next). When the value you *report upward* differs from the value you *measure*, that's the pattern firing.
+
+---
+
+## The pattern, in one line
+
+Design problems are **composition** — greedy counts (scheduler), timestamped maps + a heap (feed), map + doubly-linked-list (LRU). And tree "span/height" problems **return height while a global tracks the widest path through a node**.
+
+Next in **Part 7: Trees & Backtracking** — balance checks, side views, good-node counting, and subsets with duplicates.

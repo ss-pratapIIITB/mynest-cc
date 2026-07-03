@@ -1,0 +1,160 @@
+---
+title: "NeetCode 150 in Java — Part 8: Backtracking"
+date: "2026-07-27"
+excerpt: "Combination Sum II, Permutations, Letter Combinations of a Phone Number, and Palindrome Partitioning. The choose-explore-un-choose template across four shapes: dedup combinations, used-array permutations, digit maps, and partition cuts."
+tags: ["dsa", "java", "backtracking", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 8
+---
+
+# Backtracking
+
+**Part 8.** Four more variations on **choose → explore → un-choose**. The template never changes; what changes is the choice at each step — a next candidate, an unused element, a digit's letters, or where to cut a string.
+
+---
+
+## 1. Combination Sum II
+
+> Each candidate is used **at most once**, candidates may repeat in the input, and combinations summing to `target` must be unique.
+
+Sort, then recurse with `i + 1` (each element used once). Skip equal siblings at the same level (`i > start && c[i] == c[i-1]`) to avoid duplicate combinations, and `break` once a candidate exceeds the remaining target.
+
+```java
+public List<List<Integer>> combinationSum2(int[] candidates, int target) {
+    Arrays.sort(candidates);
+    List<List<Integer>> res = new ArrayList<>();
+    backtrack(candidates, 0, target, new ArrayList<>(), res);
+    return res;
+}
+
+private void backtrack(int[] c, int start, int remain, List<Integer> path, List<List<Integer>> res) {
+    if (remain == 0) { res.add(new ArrayList<>(path)); return; }
+    for (int i = start; i < c.length; i++) {
+        if (i > start && c[i] == c[i - 1]) continue;   // skip duplicate sibling
+        if (c[i] > remain) break;                       // sorted → no further candidate fits
+        path.add(c[i]);
+        backtrack(c, i + 1, remain - c[i], path, res);  // i+1 → each element once
+        path.remove(path.size() - 1);
+    }
+}
+```
+
+The two guards — skip-equal-siblings and the sorted `break` — are what separate this from Blind-75 Combination Sum (reuse allowed, no dups).
+
+- **Time:** O(2ⁿ) worst case. **Space:** O(n) depth.
+
+**Prep note.** Contrast the recursion index: `i` (reuse) in Combination Sum vs. `i + 1` (once) here. Same skeleton — the index choice encodes the reuse policy.
+
+---
+
+## 2. Permutations
+
+> Return all permutations of a distinct-integer array.
+
+No `start` index — order matters, so any unused element can come next. A `boolean[] used` tracks what's in the current path; record when the path reaches full length.
+
+```java
+public List<List<Integer>> permute(int[] nums) {
+    List<List<Integer>> res = new ArrayList<>();
+    backtrack(nums, new ArrayList<>(), new boolean[nums.length], res);
+    return res;
+}
+
+private void backtrack(int[] nums, List<Integer> path, boolean[] used, List<List<Integer>> res) {
+    if (path.size() == nums.length) { res.add(new ArrayList<>(path)); return; }
+    for (int i = 0; i < nums.length; i++) {
+        if (used[i]) continue;                 // already in this permutation
+        used[i] = true; path.add(nums[i]);     // choose
+        backtrack(nums, path, used, res);      // explore
+        used[i] = false; path.remove(path.size() - 1);  // un-choose
+    }
+}
+```
+
+The `used[]` array replaces the `start` index because permutations may revisit earlier positions in a different order.
+
+- **Time:** O(n · n!). **Space:** O(n).
+
+**Prep note.** For Permutations II (with duplicates), sort and add `if (i > 0 && nums[i] == nums[i-1] && !used[i-1]) continue;` — the standard "only use a duplicate if its predecessor is already used" rule.
+
+---
+
+## 3. Letter Combinations of a Phone Number
+
+> Return all letter strings a digit string can spell on a phone keypad.
+
+The choice at depth `i` is *which letter* of digit `i` to append. Map each digit to its letters, then backtrack one digit at a time; a full-length path is one combination.
+
+```java
+private static final String[] MAP = {
+    "", "", "abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"
+};
+
+public List<String> letterCombinations(String digits) {
+    List<String> res = new ArrayList<>();
+    if (digits.isEmpty()) return res;
+    backtrack(digits, 0, new StringBuilder(), res);
+    return res;
+}
+
+private void backtrack(String digits, int i, StringBuilder sb, List<String> res) {
+    if (i == digits.length()) { res.add(sb.toString()); return; }
+    for (char c : MAP[digits.charAt(i) - '0'].toCharArray()) {
+        sb.append(c);                           // choose a letter for this digit
+        backtrack(digits, i + 1, sb, res);      // move to the next digit
+        sb.deleteCharAt(sb.length() - 1);       // un-choose
+    }
+}
+```
+
+Here the branching factor varies per level (3 or 4 letters), but the choose/explore/un-choose rhythm is identical.
+
+- **Time:** O(4ⁿ · n). **Space:** O(n) depth.
+
+**Prep note.** This is Cartesian-product-as-backtracking. The keypad map is fixed data; the recursion just walks one digit deeper each level.
+
+---
+
+## 4. Palindrome Partitioning
+
+> Partition `s` so every substring is a palindrome; return all such partitions.
+
+The choice at each step is **where to make the next cut**. From position `start`, try every end; if `s[start..end]` is a palindrome, add it and recurse from `end + 1`. Reaching the string's end yields one valid partition.
+
+```java
+public List<List<String>> partition(String s) {
+    List<List<String>> res = new ArrayList<>();
+    backtrack(s, 0, new ArrayList<>(), res);
+    return res;
+}
+
+private void backtrack(String s, int start, List<String> path, List<List<String>> res) {
+    if (start == s.length()) { res.add(new ArrayList<>(path)); return; }
+    for (int end = start; end < s.length(); end++) {
+        if (isPalindrome(s, start, end)) {              // valid first piece
+            path.add(s.substring(start, end + 1));
+            backtrack(s, end + 1, path, res);           // partition the rest
+            path.remove(path.size() - 1);
+        }
+    }
+}
+
+private boolean isPalindrome(String s, int l, int r) {
+    while (l < r) if (s.charAt(l++) != s.charAt(r--)) return false;
+    return true;
+}
+```
+
+The palindrome check *prunes* invalid cuts before recursing — the difference between exploring valid partitions and enumerating all of them.
+
+- **Time:** O(n · 2ⁿ). **Space:** O(n) depth.
+
+**Prep note.** The palindrome test can be memoized into a `boolean[][]` DP for O(1) lookups if the check dominates. But the backtracking structure — "choose a cut, recurse on the rest" — is the reusable idea for any partitioning problem.
+
+---
+
+## The pattern, in one line
+
+Every backtracking problem is **choose → explore → un-choose**; only the *choice* differs — next candidate (`i` vs `i+1` for reuse), unused element (`used[]`), a digit's letters, or a cut position. Sort + skip-equal-siblings handles duplicates.
+
+Next in **Part 9: Backtracking & Graphs** — N-Queens, then island area and multi-source BFS.
