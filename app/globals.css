@@ -100,3 +100,53 @@ body {
 .dark .dino-wrapper {
   filter: invert(1);
 }
+
+/* ── Practice section: styling for injected rich-text (statement/approach/follow-ups) ── */
+.practice-rich code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.85em;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: #f4f4f5;
+  color: #15803d;
+}
+.dark .practice-rich code {
+  background: rgba(63, 63, 70, 0.5);
+  color: #4ade80;
+}
+.practice-rich strong,
+.practice-rich b {
+  color: #18181b;
+  font-weight: 600;
+}
+.dark .practice-rich strong,
+.dark .practice-rich b {
+  color: #fafafa;
+}
+.practice-rich em {
+  color: #7c3aed;
+  font-style: italic;
+}
+.dark .practice-rich em {
+  color: #a78bfa;
+}
+/* follow-up question spans render as their own lead-in line */
+.practice-rich .q {
+  display: block;
+  margin-top: 0.7rem;
+  font-weight: 600;
+  color: #18181b;
+}
+.dark .practice-rich .q {
+  color: #fafafa;
+}
+.practice-rich .q::before {
+  content: "▸ ";
+  color: #d97706;
+}
+.dark .practice-rich .q::before {
+  color: #fbbf24;
+}
+.practice-rich .q:first-child {
+  margin-top: 0;
+}

@@ -38,7 +38,7 @@ public boolean containsDuplicate(int[] nums) {
 - **Time:** O(n) — one pass, O(1) average per `add`.
 - **Space:** O(n) — worst case every element is unique and lands in the set.
 
-**Prep note.** If the interviewer says "do it with O(1) extra space," the answer is: sort first (O(n log n) time, O(1) extra if you may mutate the input) and scan for adjacent equals. Knowing the time/space trade between "hash for speed" and "sort for space" is the point of this problem.
+**Prep note.** If the constraint is "do it with O(1) extra space," the answer is: sort first (O(n log n) time, O(1) extra if you may mutate the input) and scan for adjacent equals. Knowing the time/space trade between "hash for speed" and "sort for space" is the point of this problem.
 
 ---
 

@@ -26,6 +26,12 @@ export default function Nav() {
         <span className="text-green-500 dark:text-green-400">●</span> open to work
       </span>
       <Link
+        href="/practice"
+        className="font-mono text-xs text-zinc-500 dark:text-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-300 transition-colors hidden sm:block"
+      >
+        /practice
+      </Link>
+      <Link
         href="/play"
         className="font-mono text-xs text-zinc-500 dark:text-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-300 transition-colors hidden sm:block"
       >
