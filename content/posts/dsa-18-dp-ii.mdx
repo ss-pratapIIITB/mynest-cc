@@ -1,0 +1,157 @@
+---
+title: "Blind 75 in Java — Part 18: Dynamic Programming II"
+date: "2026-07-18"
+excerpt: "Longest Increasing Subsequence, Longest Common Subsequence, Word Break, Unique Paths, and Decode Ways. Subsequence DP, the 2D grid table, and reading a string as a sequence of DP decisions."
+tags: ["dsa", "java", "dynamic-programming", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 18
+---
+
+# Dynamic Programming II
+
+**Part 18.** The step up: **subsequence** DP (which characters/numbers to keep), **2D grid** DP (a table indexed by two positions), and treating a **string as a sequence of decisions**. The move that unlocks each is naming what `dp[i]` — or `dp[i][j]` — actually means before writing a line.
+
+---
+
+## 1. Longest Increasing Subsequence
+
+> Return the length of the longest strictly increasing subsequence.
+
+`dp[i]` = the length of the longest increasing subsequence **ending at** `i`. For each `i`, look back at every `j < i` with `nums[j] < nums[i]` and extend the best one. The answer is the max over all `dp[i]`.
+
+```java
+public int lengthOfLIS(int[] nums) {
+    int[] dp = new int[nums.length];
+    Arrays.fill(dp, 1);                     // each element alone is a length-1 subsequence
+    int best = 1;
+    for (int i = 1; i < nums.length; i++) {
+        for (int j = 0; j < i; j++)
+            if (nums[j] < nums[i]) dp[i] = Math.max(dp[i], dp[j] + 1);
+        best = Math.max(best, dp[i]);
+    }
+    return best;
+}
+```
+
+"Ending at `i`" is the state that makes the recurrence work — it fixes the last element so extensions are well-defined.
+
+- **Time:** O(n²). **Space:** O(n).
+
+**Prep note.** There's an O(n log n) version: maintain a "tails" array and binary-search each number's insertion point (`Arrays.binarySearch`). Mention it as the optimal approach — it's patience sorting in disguise.
+
+---
+
+## 2. Longest Common Subsequence
+
+> Return the length of the longest subsequence common to two strings.
+
+The template **2D DP**. `dp[i][j]` = LCS of the first `i` chars of `a` and first `j` of `b`. If the current characters match, extend the diagonal (`dp[i-1][j-1] + 1`); otherwise take the better of dropping one character from either string.
+
+```java
+public int longestCommonSubsequence(String a, String b) {
+    int m = a.length(), n = b.length();
+    int[][] dp = new int[m + 1][n + 1];     // dp[0][*] and dp[*][0] = 0 (empty prefix)
+    for (int i = 1; i <= m; i++)
+        for (int j = 1; j <= n; j++)
+            dp[i][j] = (a.charAt(i - 1) == b.charAt(j - 1))
+                ? dp[i - 1][j - 1] + 1                          // match → take the diagonal + 1
+                : Math.max(dp[i - 1][j], dp[i][j - 1]);         // no match → best of dropping one
+    return dp[m][n];
+}
+```
+
+The match/no-match branch is the universal two-sequence pattern — Edit Distance, Longest Common Substring, and diff tools all wear this same recurrence.
+
+- **Time:** O(m·n). **Space:** O(m·n), reducible to O(n) with two rolling rows.
+
+**Prep note.** The 1-based indexing with a padding row/column is deliberate: `dp[0][*]` and `dp[*][0]` encode "one string is empty," so no special-casing inside the loop.
+
+---
+
+## 3. Word Break
+
+> Can `s` be segmented into a sequence of words from a dictionary?
+
+`dp[i]` = "can the first `i` characters be segmented?" For each `i`, look for a split point `j` where `dp[j]` is true **and** the substring `s[j..i)` is a dictionary word. A `HashSet` gives O(1) word lookups.
+
+```java
+public boolean wordBreak(String s, List<String> wordDict) {
+    Set<String> words = new HashSet<>(wordDict);
+    boolean[] dp = new boolean[s.length() + 1];
+    dp[0] = true;                                       // empty prefix is trivially segmentable
+    for (int i = 1; i <= s.length(); i++)
+        for (int j = 0; j < i; j++)
+            if (dp[j] && words.contains(s.substring(j, i))) { dp[i] = true; break; }
+    return dp[s.length()];
+}
+```
+
+`dp[j] && word(j..i)` reads exactly like the definition: a valid segmentation of the first `i` chars is a valid segmentation of the first `j` plus one more word.
+
+- **Time:** O(n² · L) with substring/lookup. **Space:** O(n).
+
+**Prep note.** The `break` after setting `dp[i]` is a small win — once one valid split is found, further `j` values can't change the boolean. For "count all segmentations," drop the break and accumulate instead.
+
+---
+
+## 4. Unique Paths
+
+> How many paths from the top-left to bottom-right of an m×n grid, moving only right or down?
+
+`dp[r][c]` = paths to reach cell `(r, c)`. You arrive only from above or from the left, so `dp[r][c] = dp[r-1][c] + dp[r][c-1]`. The top row and left column are all 1 (a single straight path).
+
+```java
+public int uniquePaths(int m, int n) {
+    int[] dp = new int[n];
+    Arrays.fill(dp, 1);                     // top row: one way to reach each cell
+    for (int r = 1; r < m; r++)
+        for (int c = 1; c < n; c++)
+            dp[c] += dp[c - 1];             // dp[c] (row above) + dp[c-1] (this row, left)
+    return dp[n - 1];
+}
+```
+
+The single rolling row is the O(n)-space trick: after the update, `dp[c]` holds "from above" and `dp[c-1]` holds "from the left."
+
+- **Time:** O(m·n). **Space:** O(n).
+
+**Prep note.** Unique Paths II adds obstacles — set blocked cells to 0 so no path passes through. The grid-sum recurrence is the same; only the base/blocked cells change.
+
+---
+
+## 5. Decode Ways
+
+> How many ways to decode a digit string where `1→A … 26→Z`?
+
+Read the string as a sequence of decisions, like Climbing Stairs with rules. `dp[i]` = ways to decode the first `i` digits. A single digit decodes if it's not `'0'`; a pair decodes if it's in `10..26`. Sum the valid options.
+
+```java
+public int numDecodings(String s) {
+    int n = s.length();
+    if (s.charAt(0) == '0') return 0;
+    int prev2 = 1, prev1 = 1;               // dp[0]=1 (empty), dp[1]=1 (valid first digit)
+    for (int i = 2; i <= n; i++) {
+        int cur = 0;
+        if (s.charAt(i - 1) != '0') cur += prev1;                 // single digit 1..9
+        int two = Integer.parseInt(s.substring(i - 2, i));
+        if (two >= 10 && two <= 26) cur += prev2;                 // valid pair 10..26
+        prev2 = prev1;
+        prev1 = cur;
+    }
+    return prev1;
+}
+```
+
+The `'0'` cases are the whole difficulty: a lone `'0'` is undecodable, and it can only survive as the tail of `10` or `20`.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Same two-back recurrence as Climbing Stairs, but each transition is *gated* by validity checks. When a counting DP has constraints, the recurrence stays the same — you just guard each term.
+
+---
+
+## The pattern, in one line
+
+Level-two DP: **"ending at `i`"** for subsequences, **`dp[i][j]` with a match/no-match branch** for two-sequence and grid problems, and **string-as-decision-sequence** for parsing counts — often a gated version of a 1D recurrence you already know.
+
+That completes the DP problems. Next in **Part 19: Bit Manipulation** — the XOR tricks and Kernighan's move that close out the Blind 75.

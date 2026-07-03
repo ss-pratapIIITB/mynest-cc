@@ -1,0 +1,147 @@
+---
+title: "Blind 75 in Java — Part 19: Bit Manipulation"
+date: "2026-07-19"
+excerpt: "Sum of Two Integers, Number of 1 Bits, Counting Bits, Missing Number, and Reverse Bits. XOR as a difference detector, Kernighan's lowest-bit trick, and simulating addition with logic gates — closing out the Blind 75."
+tags: ["dsa", "java", "bit-manipulation", "xor", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 19
+---
+
+# Bit Manipulation
+
+**Part 19** — the finale of the Blind 75. Bit problems look scary but rest on a tiny set of identities: `a ^ a = 0` and `a ^ 0 = a` (XOR cancels pairs), `n & (n-1)` clears the lowest set bit, and addition splits into a **sum-without-carry** (XOR) plus a **carry** (AND, shifted). Learn those and these five fall out.
+
+---
+
+## 1. Sum of Two Integers
+
+> Compute `a + b` without using `+` or `−`.
+
+Addition is two operations you can do with logic gates. **XOR** gives the sum ignoring carries (`1+1 = 0` with no carry). **AND** finds where carries happen; shifting it left by one moves each carry to its next position. Repeat until there's no carry left.
+
+```java
+public int getSum(int a, int b) {
+    while (b != 0) {
+        int carry = (a & b) << 1;   // positions that generate a carry, moved up one
+        a = a ^ b;                  // sum without the carries
+        b = carry;                  // fold the carry back in next round
+    }
+    return a;
+}
+```
+
+Each loop pushes the carry one bit higher; when the carry becomes 0, `a` holds the full sum. Java's two's-complement ints make this work for negatives with no extra masking.
+
+- **Time:** O(1) — at most 32 iterations. **Space:** O(1).
+
+**Prep note.** XOR = add-without-carry, `AND << 1` = the carry. If you can state those two sentences, you can rebuild this from scratch. Subtraction is the same loop with a borrow.
+
+---
+
+## 2. Number of 1 Bits
+
+> Count the set bits (population count) of an integer.
+
+**Brian Kernighan's trick:** `n & (n - 1)` clears the **lowest** set bit — because subtracting 1 flips the rightmost `1` to `0` and everything below it to `1`, and the AND wipes those. So the loop runs exactly once per set bit, not 32 times.
+
+```java
+public int hammingWeight(int n) {
+    int count = 0;
+    while (n != 0) {
+        n &= (n - 1);   // drop the lowest set bit
+        count++;
+    }
+    return count;
+}
+```
+
+Looping `popcount(n)` times instead of a fixed 32 is faster whenever the number is sparse.
+
+- **Time:** O(number of set bits). **Space:** O(1).
+
+**Prep note.** In Java, use `Integer.bitCount(n)` in real code; hand-roll Kernighan when asked to show the mechanism. Note that Java's `>>>` (unsigned shift) matters if you iterate bits of a negative number.
+
+---
+
+## 3. Counting Bits
+
+> Return an array where `result[i]` is the number of set bits in `i`, for `0..n`.
+
+Reuse smaller answers instead of counting each number from scratch. `i >> 1` is `i` with its last bit removed — a number you've already counted — so `dp[i] = dp[i >> 1] + (i & 1)` adds back the bit you dropped.
+
+```java
+public int[] countBits(int n) {
+    int[] dp = new int[n + 1];
+    for (int i = 1; i <= n; i++)
+        dp[i] = dp[i >> 1] + (i & 1);   // count of i/2, plus i's own last bit
+    return dp;
+}
+```
+
+Right-shifting halves the number, so `dp[i >> 1]` is already computed — classic DP built on bit structure.
+
+- **Time:** O(n). **Space:** O(n) for the output.
+
+**Prep note.** The alternative recurrence `dp[i] = dp[i & (i-1)] + 1` (Kernighan) is equally clean — the value with its lowest bit removed, plus one. Either shows you saw the overlap with earlier answers.
+
+---
+
+## 4. Missing Number
+
+> An array holds `n` distinct numbers from `0..n` with exactly one missing. Find it.
+
+**XOR everything together** — all indices `0..n` and all array values. Every present number appears once as a value and once as an index, so it cancels itself out (`x ^ x = 0`); only the missing index survives.
+
+```java
+public int missingNumber(int[] nums) {
+    int result = nums.length;               // start with n (the top index, which has no value)
+    for (int i = 0; i < nums.length; i++)
+        result ^= i ^ nums[i];              // cancel each index against each value
+    return result;
+}
+```
+
+Seeding with `nums.length` folds in the one index (`n`) that the loop doesn't reach, so all indices `0..n` participate.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The Gauss sum — `n*(n+1)/2 − sum(nums)` — is a clean alternative and arguably more intuitive. XOR wins style points and avoids any overflow concern. Know both and mention the trade.
+
+---
+
+## 5. Reverse Bits
+
+> Reverse the 32 bits of an unsigned integer.
+
+Process one bit at a time: shift the result left to make room, OR in the current lowest bit of `n`, then shift `n` right. After 32 rounds the bit that was lowest ends up highest — a mirror.
+
+```java
+public int reverseBits(int n) {
+    int result = 0;
+    for (int i = 0; i < 32; i++) {
+        result = (result << 1) | (n & 1);   // append n's lowest bit to result
+        n >>>= 1;                            // unsigned shift to the next bit
+    }
+    return result;
+}
+```
+
+Using `>>>` (unsigned right shift) is essential — a signed `>>` would smear the sign bit and corrupt the high bits.
+
+- **Time:** O(1) — fixed 32 iterations. **Space:** O(1).
+
+**Prep note.** If the function is called repeatedly, cache 8-bit (byte) reversals in a lookup table and assemble four bytes per call — O(1) per call with a tiny precomputed table. A good "optimize for repeated calls" answer.
+
+---
+
+## The pattern, in one line
+
+Bit problems reduce to a handful of identities: **XOR cancels duplicates and detects differences**, **`n & (n-1)` clears the lowest set bit**, **`i >> 1` reuses a smaller answer**, and **addition = XOR (sum) + carry (AND `<< 1`)**. Use `>>>` when you don't want the sign bit to leak.
+
+---
+
+## That's the Blind 75
+
+Nineteen parts, the full list, one Java solution and one reusable pattern at a time. The through-line was never the individual answers — it was learning to **recognize the shape fast**: "seen before?" → hash, "sorted/symmetric?" → two pointers, "contiguous best?" → sliding window, "monotonic?" → binary search, "dependencies?" → topological sort, "overlapping choices?" → DP.
+
+Next, the series turns to the **NeetCode 150** — the same pattern-first treatment across the problems the roadmap adds beyond these 75.

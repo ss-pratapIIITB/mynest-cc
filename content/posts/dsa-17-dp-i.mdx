@@ -1,0 +1,155 @@
+---
+title: "Blind 75 in Java — Part 17: Dynamic Programming I"
+date: "2026-07-17"
+excerpt: "Climbing Stairs, House Robber, House Robber II, Coin Change, and Jump Game. The 1D DP recurrences — plus the trick for turning a circular constraint into two linear passes."
+tags: ["dsa", "java", "dynamic-programming", "greedy", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 17
+---
+
+# Dynamic Programming I
+
+**Part 17.** DP intimidates because people hunt for the trick. The actual work is mechanical: **define the state** (`dp[i]` = the answer for the first `i` things), **write the recurrence** (how `dp[i]` builds on smaller answers), and pick a base case. These five drill 1D state until the recurrence is the *first* thing you see.
+
+---
+
+## 1. Climbing Stairs
+
+> You climb 1 or 2 steps at a time. How many distinct ways to reach step `n`?
+
+To land on step `i`, you came from `i − 1` (a 1-step) or `i − 2` (a 2-step). So `dp[i] = dp[i-1] + dp[i-2]` — it's Fibonacci. Only the last two values matter, so track them in two variables.
+
+```java
+public int climbStairs(int n) {
+    int prev2 = 1, prev1 = 1;               // ways to reach step 0 and step 1
+    for (int i = 2; i <= n; i++) {
+        int cur = prev1 + prev2;            // dp[i] = dp[i-1] + dp[i-2]
+        prev2 = prev1;
+        prev1 = cur;
+    }
+    return prev1;
+}
+```
+
+Rolling two variables instead of a full array is the standard O(1)-space collapse for any recurrence that only reaches back a fixed distance.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Naming the recurrence ("this is Fibonacci") up front signals you've mapped the problem to a known shape — which is what most 1D DP reduces to.
+
+---
+
+## 2. House Robber
+
+> Maximize the sum of non-adjacent houses along a street.
+
+At each house decide: **rob it** (its value + best up to two houses back) or **skip it** (best up to the previous house). `dp[i] = max(dp[i-1], dp[i-2] + nums[i])`. Again only two prior values matter.
+
+```java
+public int rob(int[] nums) {
+    int prev2 = 0, prev1 = 0;               // best loot up to two/one houses back
+    for (int n : nums) {
+        int cur = Math.max(prev1, prev2 + n);  // skip this house, or rob it
+        prev2 = prev1;
+        prev1 = cur;
+    }
+    return prev1;
+}
+```
+
+The "take or skip" choice, resolved with a `max`, is the most common 1D DP transition you'll write.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** This is the base case for a whole family (with cooldowns, with fees). Get the take/skip recurrence automatic and the variants become small edits.
+
+---
+
+## 3. House Robber II
+
+> Same, but the houses form a **circle** — the first and last are adjacent.
+
+The circular constraint means you can't take both the first and last house. Split into two ordinary (linear) House Robber runs — one **excluding the first** house, one **excluding the last** — and take the better. Each run is problem 2.
+
+```java
+public int rob(int[] nums) {
+    if (nums.length == 1) return nums[0];
+    return Math.max(robLine(nums, 0, nums.length - 2),   // houses [0 .. n-2] (drop last)
+                    robLine(nums, 1, nums.length - 1));  // houses [1 .. n-1] (drop first)
+}
+
+private int robLine(int[] nums, int lo, int hi) {
+    int prev2 = 0, prev1 = 0;
+    for (int i = lo; i <= hi; i++) {
+        int cur = Math.max(prev1, prev2 + nums[i]);
+        prev2 = prev1;
+        prev1 = cur;
+    }
+    return prev1;
+}
+```
+
+Turning one hard circular problem into two easy linear ones is the reusable move — the same "break the loop by fixing an endpoint" idea appears in circular-array DP.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The single-house guard matters: with one house, both ranges are empty and you'd return 0 instead of `nums[0]`. Edge cases like this are where circular reductions bite.
+
+---
+
+## 4. Coin Change
+
+> Fewest coins summing to `amount` (unlimited coins), or `−1` if impossible.
+
+`dp[a]` = fewest coins to make amount `a`. For each amount, try every coin: `dp[a] = min(dp[a - coin] + 1)`. Initialize with a sentinel "infinity" so unreachable amounts stay unreachable.
+
+```java
+public int coinChange(int[] coins, int amount) {
+    int[] dp = new int[amount + 1];
+    Arrays.fill(dp, amount + 1);            // sentinel: larger than any real answer
+    dp[0] = 0;                              // zero coins make amount 0
+    for (int a = 1; a <= amount; a++)
+        for (int coin : coins)
+            if (coin <= a) dp[a] = Math.min(dp[a], dp[a - coin] + 1);
+    return dp[amount] > amount ? -1 : dp[amount];
+}
+```
+
+Using `amount + 1` as the sentinel (rather than `Integer.MAX_VALUE`) avoids overflow when you add 1, while still being unmistakably "unreachable."
+
+- **Time:** O(amount · coins). **Space:** O(amount).
+
+**Prep note.** This is *unbounded* knapsack (coins reused), so the amount loop is outer and coins inner. Contrast with 0/1 knapsack where each item is used once and the iteration order flips — a distinction worth being crisp on.
+
+---
+
+## 5. Jump Game
+
+> Each value is a max jump length. Can you reach the last index?
+
+Pure DP is O(n²), but a **greedy** pass is O(n): track the **farthest index reachable so far**. If you ever stand on an index beyond that reach, you're stuck; otherwise extend the reach and continue.
+
+```java
+public boolean canJump(int[] nums) {
+    int farthest = 0;
+    for (int i = 0; i < nums.length; i++) {
+        if (i > farthest) return false;             // can't even get to i
+        farthest = Math.max(farthest, i + nums[i]); // extend reach
+    }
+    return true;
+}
+```
+
+The single `farthest` value captures everything you need — no table required.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Jump Game II (fewest jumps) extends this to a greedy BFS-by-levels: track the current jump's boundary and the farthest reachable within it. Recognizing when DP collapses to greedy is the higher-level skill here.
+
+---
+
+## The pattern, in one line
+
+1D DP is a recipe: **`dp[i]` = the answer up to `i`**, built by a **take/skip or min-over-choices** recurrence, usually collapsible to O(1) space. Break **circular** constraints by fixing an endpoint, and watch for problems where DP simplifies to a **greedy reach**.
+
+Next in **Part 18: Dynamic Programming II** — subsequences, grids, and 2D state.
