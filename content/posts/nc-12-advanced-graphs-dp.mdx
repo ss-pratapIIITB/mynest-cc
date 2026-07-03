@@ -1,0 +1,134 @@
+---
+title: "NeetCode 150 in Java — Part 12: Itineraries & DP Openers"
+date: "2026-07-31"
+excerpt: "Reconstruct Itinerary, Min Cost Climbing Stairs, Partition Equal Subset Sum, and Coin Change II. Hierholzer's Eulerian path, a 1D cost recurrence, and subset-sum as 0/1 knapsack — counting vs. reaching."
+tags: ["dsa", "java", "graphs", "dynamic-programming", "knapsack", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 12
+---
+
+# Itineraries & DP Openers
+
+**Part 12.** One last graph problem — the **Eulerian path** — then the dynamic-programming additions begin, opening with the **0/1 knapsack** family (subset-sum and coin combinations).
+
+---
+
+## 1. Reconstruct Itinerary
+
+> Given airline tickets, reconstruct the itinerary starting at `"JFK"`, using every ticket once, lexicographically smallest.
+
+This is an **Eulerian path** (use every edge once). **Hierholzer's algorithm**: from each node, greedily fly to the smallest-lexicographic unused destination; when a node has no outgoing edges left, it's added to the route. The reversed post-order is the itinerary.
+
+```java
+public List<String> findItinerary(List<List<String>> tickets) {
+    Map<String, PriorityQueue<String>> adj = new HashMap<>();
+    for (List<String> t : tickets)
+        adj.computeIfAbsent(t.get(0), k -> new PriorityQueue<>()).offer(t.get(1)); // min-heap = lexicographic
+
+    LinkedList<String> route = new LinkedList<>();
+    dfs("JFK", adj, route);
+    return route;
+}
+
+private void dfs(String airport, Map<String, PriorityQueue<String>> adj, LinkedList<String> route) {
+    PriorityQueue<String> dests = adj.get(airport);
+    while (dests != null && !dests.isEmpty())
+        dfs(dests.poll(), adj, route);        // consume the smallest edge, recurse
+    route.addFirst(airport);                  // add on the way back (post-order)
+}
+```
+
+Adding each airport to the *front* on the way back reverses the post-order into a valid forward itinerary — the signature of Hierholzer's.
+
+- **Time:** O(E log E). **Space:** O(E).
+
+**Prep note.** The counterintuitive part is adding nodes *after* exhausting their edges (post-order) and reversing. A min-heap per node gives the lexicographic-smallest choice for free.
+
+---
+
+## 2. Min Cost Climbing Stairs
+
+> Each stair has a cost; from step `i` you climb 1 or 2 steps. Reach the top with minimum total cost (start at step 0 or 1).
+
+`dp[i]` = min cost to *reach* step `i`. You arrive from `i − 1` or `i − 2`, paying that step's cost: `dp[i] = min(dp[i-1] + cost[i-1], dp[i-2] + cost[i-2])`. Two rolling variables suffice.
+
+```java
+public int minCostClimbingStairs(int[] cost) {
+    int prev2 = 0, prev1 = 0;              // cost to reach steps 0 and 1 (both free to start)
+    for (int i = 2; i <= cost.length; i++) {
+        int cur = Math.min(prev1 + cost[i - 1], prev2 + cost[i - 2]);
+        prev2 = prev1;
+        prev1 = cur;
+    }
+    return prev1;                          // reaching "the top" (one past the last step)
+}
+```
+
+The top is index `n` (one past the last stair), which is why the loop runs to `cost.length` inclusive.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Same two-back structure as Climbing Stairs, but *minimizing cost* instead of *counting ways*. When the recurrence shape matches a known problem, only the aggregation (`min` vs `+`) changes.
+
+---
+
+## 3. Partition Equal Subset Sum
+
+> Can the array be split into two subsets with equal sum?
+
+If the total is odd, no. Otherwise it's **0/1 knapsack**: can any subset sum to `total / 2`? `dp[s]` = "is sum `s` reachable?" For each number, update sums **downward** so each element is used at most once.
+
+```java
+public boolean canPartition(int[] nums) {
+    int total = 0;
+    for (int n : nums) total += n;
+    if (total % 2 != 0) return false;
+    int target = total / 2;
+
+    boolean[] dp = new boolean[target + 1];
+    dp[0] = true;                          // sum 0 is always reachable (empty subset)
+    for (int n : nums)
+        for (int s = target; s >= n; s--)  // iterate DOWNWARD → each number used once
+            dp[s] = dp[s] || dp[s - n];
+    return dp[target];
+}
+```
+
+The downward inner loop is the 0/1-knapsack signature: it prevents reusing `n` within the same iteration (an upward loop would allow reuse, giving unbounded knapsack).
+
+- **Time:** O(n · target). **Space:** O(target).
+
+**Prep note.** Direction of the inner loop is the whole distinction: **downward = each item once (0/1)**, **upward = unlimited reuse (unbounded)**. Coin Change was unbounded; this is 0/1.
+
+---
+
+## 4. Coin Change II
+
+> Count the number of combinations of coins that make up `amount` (unlimited coins).
+
+Unbounded knapsack, but **counting combinations** (not minimizing coins). `dp[a]` = number of ways to make `a`. Loop coins **outer** and amounts inner — that order counts each combination once regardless of coin order (so `1,2` and `2,1` aren't double-counted).
+
+```java
+public int change(int amount, int[] coins) {
+    int[] dp = new int[amount + 1];
+    dp[0] = 1;                             // one way to make 0: use no coins
+    for (int coin : coins)                 // coins OUTER → combinations, not permutations
+        for (int a = coin; a <= amount; a++)
+            dp[a] += dp[a - coin];         // add ways that end by using this coin
+    return dp[amount];
+}
+```
+
+Putting the coin loop outside is the subtle key: it fixes a coin-consideration order so each *combination* is counted exactly once.
+
+- **Time:** O(amount · coins). **Space:** O(amount).
+
+**Prep note.** Loop order encodes intent: **coins outer = count combinations**; **amount outer = count permutations** (ordered sequences). Getting this backwards is the classic Coin Change II bug.
+
+---
+
+## The pattern, in one line
+
+Eulerian paths use **Hierholzer's** (consume edges, add nodes post-order, reverse). Knapsack DP hinges on **loop direction and order**: downward inner = each item once, upward = reuse; coins-outer counts combinations, amount-outer counts permutations.
+
+Next in **Part 13: 2-D Dynamic Programming** — grids, two sequences, and target counts.

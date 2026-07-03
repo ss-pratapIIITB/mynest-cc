@@ -1,0 +1,161 @@
+---
+title: "NeetCode 150 in Java — Part 11: Advanced Graphs"
+date: "2026-07-30"
+excerpt: "Network Delay Time, Cheapest Flights Within K Stops, Min Cost to Connect Points, and Swim in Rising Water. Dijkstra, Bellman-Ford with a hop limit, Prim's MST, and Dijkstra on a modified cost."
+tags: ["dsa", "java", "graphs", "dijkstra", "mst", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 11
+---
+
+# Advanced Graphs
+
+**Part 11.** Weighted graphs. **Dijkstra** (a BFS with a min-heap by cumulative cost) for shortest paths with non-negative weights, **Bellman-Ford** when you need a hop limit, and **Prim's** for a minimum spanning tree. The last problem shows Dijkstra adapts by just **changing what "cost" means**.
+
+---
+
+## 1. Network Delay Time
+
+> From a source node, return the time for a signal to reach all `n` nodes (or `−1`).
+
+**Dijkstra.** A min-heap ordered by cumulative time repeatedly expands the nearest unfinalized node, relaxing its edges. The answer is the time the *last* node is finalized.
+
+```java
+public int networkDelayTime(int[][] times, int n, int k) {
+    Map<Integer, List<int[]>> adj = new HashMap<>();
+    for (int[] t : times) adj.computeIfAbsent(t[0], x -> new ArrayList<>()).add(new int[]{t[1], t[2]});
+
+    PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> a[1] - b[1]);  // [node, dist]
+    pq.offer(new int[]{k, 0});
+    Map<Integer, Integer> dist = new HashMap<>();
+    while (!pq.isEmpty()) {
+        int[] cur = pq.poll();
+        int node = cur[0], d = cur[1];
+        if (dist.containsKey(node)) continue;             // already finalized (heap may hold stale copies)
+        dist.put(node, d);
+        for (int[] nb : adj.getOrDefault(node, List.of()))
+            if (!dist.containsKey(nb[0])) pq.offer(new int[]{nb[0], d + nb[1]});
+    }
+    if (dist.size() != n) return -1;                       // some node unreachable
+    int max = 0;
+    for (int d : dist.values()) max = Math.max(max, d);
+    return max;
+}
+```
+
+Skipping already-finalized nodes handles the stale heap entries Dijkstra leaves behind — the first time you pop a node is its shortest distance.
+
+- **Time:** O(E log V). **Space:** O(V + E).
+
+**Prep note.** Dijkstra = BFS where the queue is a min-heap keyed on cumulative cost. It requires non-negative weights; the "pop = finalized" property is what makes it correct.
+
+---
+
+## 2. Cheapest Flights Within K Stops
+
+> Cheapest price from `src` to `dst` using **at most `k` stops**.
+
+The stop limit breaks Dijkstra's "finalize once" property (a pricier path with fewer stops may still be needed). **Bellman-Ford** fits: relax all edges `k + 1` times, each round allowing one more hop. Use a snapshot of costs per round so a single round can't chain multiple hops.
+
+```java
+public int findCheapestPrice(int n, int[][] flights, int src, int dst, int k) {
+    int[] cost = new int[n];
+    Arrays.fill(cost, Integer.MAX_VALUE);
+    cost[src] = 0;
+    for (int i = 0; i <= k; i++) {                 // at most k stops = k+1 edges
+        int[] snapshot = cost.clone();             // freeze this round's costs
+        for (int[] f : flights) {
+            int from = f[0], to = f[1], price = f[2];
+            if (snapshot[from] != Integer.MAX_VALUE)
+                cost[to] = Math.min(cost[to], snapshot[from] + price);
+        }
+    }
+    return cost[dst] == Integer.MAX_VALUE ? -1 : cost[dst];
+}
+```
+
+The `snapshot` clone is essential: relaxing from *this round's* frozen costs guarantees each round adds exactly one hop, respecting the stop limit.
+
+- **Time:** O(k · E). **Space:** O(n).
+
+**Prep note.** When a shortest-path problem has a **hop/step constraint**, reach for Bellman-Ford (relax in rounds), not Dijkstra — the per-round snapshot is what enforces "one more edge per round."
+
+---
+
+## 3. Min Cost to Connect Points
+
+> Connect all points at minimum total cost, where an edge's cost is the Manhattan distance.
+
+A **minimum spanning tree** via **Prim's**: grow the tree from any start, always adding the cheapest edge that reaches a new point. A min-heap of candidate edges keyed on distance drives it.
+
+```java
+public int minCostConnectPoints(int[][] points) {
+    int n = points.length;
+    boolean[] inTree = new boolean[n];
+    PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> a[1] - b[1]);  // [point, cost]
+    pq.offer(new int[]{0, 0});
+    int total = 0, used = 0;
+    while (used < n) {
+        int[] cur = pq.poll();
+        int i = cur[0];
+        if (inTree[i]) continue;                    // skip points already connected
+        inTree[i] = true; total += cur[1]; used++;
+        for (int j = 0; j < n; j++)
+            if (!inTree[j]) {
+                int d = Math.abs(points[i][0]-points[j][0]) + Math.abs(points[i][1]-points[j][1]);
+                pq.offer(new int[]{j, d});
+            }
+    }
+    return total;
+}
+```
+
+Prim's always extends the tree by its cheapest outgoing edge — the greedy choice that provably builds a minimum spanning tree.
+
+- **Time:** O(n² log n) with a dense graph. **Space:** O(n²) edges in the heap.
+
+**Prep note.** MST has two classic algorithms: **Prim's** (grow one tree via a heap) and **Kruskal's** (sort edges, add with Union-Find if they don't form a cycle). Either works; Prim's suits dense/implicit graphs like this one.
+
+---
+
+## 4. Swim in Rising Water
+
+> Water rises over an elevation grid; return the earliest time you can travel from top-left to bottom-right, where a path's "time" is its maximum cell elevation.
+
+**Dijkstra with a redefined cost.** Instead of summing edge weights, a path's cost is the **maximum elevation** along it. A min-heap ordered by that running max expands the lowest-ceiling cell first; the answer is the max elevation when you pop the destination.
+
+```java
+public int swimInWater(int[][] grid) {
+    int n = grid.length;
+    boolean[][] seen = new boolean[n][n];
+    PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> a[0] - b[0]);  // [maxElevSoFar, r, c]
+    pq.offer(new int[]{grid[0][0], 0, 0});
+    int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};
+    while (!pq.isEmpty()) {
+        int[] cur = pq.poll();
+        int t = cur[0], r = cur[1], c = cur[2];
+        if (r == n-1 && c == n-1) return t;          // reached the end at cost t
+        if (seen[r][c]) continue;
+        seen[r][c] = true;
+        for (int[] d : dirs) {
+            int nr = r + d[0], nc = c + d[1];
+            if (nr >= 0 && nr < n && nc >= 0 && nc < n && !seen[nr][nc])
+                pq.offer(new int[]{Math.max(t, grid[nr][nc]), nr, nc});  // cost = max elevation on path
+        }
+    }
+    return -1;
+}
+```
+
+The only change from vanilla Dijkstra is the cost function: `max(runningMax, neighborElevation)` instead of `sum + weight`.
+
+- **Time:** O(n² log n). **Space:** O(n²).
+
+**Prep note.** Dijkstra generalizes to *any* cost that only grows along a path — sum, max, or otherwise. Recognizing "minimize the maximum along a path" as a Dijkstra variant is the leap. (Union-Find with sorted cells is an elegant alternative.)
+
+---
+
+## The pattern, in one line
+
+Weighted graphs: **Dijkstra** (min-heap by cumulative cost) for non-negative shortest paths, **Bellman-Ford** (relax in rounds) when there's a **hop limit**, and **Prim's/Kruskal's** for an MST. Dijkstra bends to new problems by **redefining what "cost" accumulates**.
+
+Next in **Part 12: Advanced Graphs II & DP** — Eulerian paths, then the first dynamic-programming additions.

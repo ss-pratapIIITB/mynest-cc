@@ -1,0 +1,162 @@
+---
+title: "NeetCode 150 in Java — Part 10: Graphs II"
+date: "2026-07-29"
+excerpt: "Surrounded Regions, Course Schedule II, Redundant Connection, and Word Ladder. Flooding from the border inward, topological ordering, Union-Find to spot the cycle-closing edge, and BFS over word transformations."
+tags: ["dsa", "java", "graphs", "union-find", "topological-sort", "bfs", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 10
+---
+
+# Graphs II
+
+**Part 10.** Four more graph shapes: **flood from the border** to distinguish "escapes" from "trapped," **topological ordering** for a build sequence, **Union-Find** to find the edge that closes a cycle, and **BFS over a word-transformation graph**.
+
+---
+
+## 1. Surrounded Regions
+
+> Flip every `'O'` region fully surrounded by `'X'` to `'X'`. Regions touching the border survive.
+
+Reverse the question: instead of finding trapped regions, find the **safe** ones. Flood from every border `'O'`, marking reachable cells. Whatever stays unmarked is truly surrounded — flip it.
+
+```java
+public void solve(char[][] board) {
+    int m = board.length, n = board[0].length;
+    for (int r = 0; r < m; r++) { guard(board, r, 0); guard(board, r, n - 1); }
+    for (int c = 0; c < n; c++) { guard(board, 0, c); guard(board, m - 1, c); }
+
+    for (int r = 0; r < m; r++)
+        for (int c = 0; c < n; c++) {
+            if (board[r][c] == 'O') board[r][c] = 'X';        // unmarked O ⇒ surrounded
+            else if (board[r][c] == 'S') board[r][c] = 'O';   // safe ⇒ restore
+        }
+}
+
+private void guard(char[][] b, int r, int c) {
+    if (r < 0 || r >= b.length || c < 0 || c >= b[0].length || b[r][c] != 'O') return;
+    b[r][c] = 'S';                                            // mark border-connected as safe
+    guard(b, r+1, c); guard(b, r-1, c); guard(b, r, c+1); guard(b, r, c-1);
+}
+```
+
+Marking border-reachable cells with a temporary `'S'` lets the final pass cleanly separate trapped from safe.
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** "Solve the complement": finding trapped regions directly is fiddly, but finding *safe* ones (border-connected) is a plain flood. Reframing to the easier complement is the trick.
+
+---
+
+## 2. Course Schedule II
+
+> Return an order to take all courses given prerequisites, or empty if impossible.
+
+**Topological sort** (Kahn's): the order in which zero-in-degree nodes are dequeued *is* a valid ordering. If a cycle blocks some courses, fewer than `n` come out — return empty.
+
+```java
+public int[] findOrder(int numCourses, int[][] prerequisites) {
+    List<List<Integer>> adj = new ArrayList<>();
+    int[] indeg = new int[numCourses];
+    for (int i = 0; i < numCourses; i++) adj.add(new ArrayList<>());
+    for (int[] p : prerequisites) { adj.get(p[1]).add(p[0]); indeg[p[0]]++; }
+
+    Queue<Integer> q = new LinkedList<>();
+    for (int i = 0; i < numCourses; i++) if (indeg[i] == 0) q.offer(i);
+
+    int[] order = new int[numCourses];
+    int idx = 0;
+    while (!q.isEmpty()) {
+        int cur = q.poll();
+        order[idx++] = cur;
+        for (int next : adj.get(cur)) if (--indeg[next] == 0) q.offer(next);
+    }
+    return idx == numCourses ? order : new int[0];   // incomplete ⇒ cycle
+}
+```
+
+Recording each node as it's dequeued builds the order directly — Course Schedule I just checked whether this completes.
+
+- **Time:** O(V + E). **Space:** O(V + E).
+
+**Prep note.** Kahn's BFS gives the order for free; a DFS post-order (reversed) is the equivalent alternative. Either way, "valid build/dependency order" ⇒ topological sort.
+
+---
+
+## 3. Redundant Connection
+
+> In a tree plus one extra edge (forming one cycle), return the edge that can be removed to restore a tree.
+
+Process edges with **Union-Find**. The first edge whose two endpoints are *already* connected is the one that closes the cycle — return it.
+
+```java
+public int[] findRedundantConnection(int[][] edges) {
+    int[] parent = new int[edges.length + 1];
+    for (int i = 0; i < parent.length; i++) parent[i] = i;
+    for (int[] e : edges) {
+        if (find(parent, e[0]) == find(parent, e[1])) return e;   // already connected ⇒ cycle edge
+        parent[find(parent, e[0])] = find(parent, e[1]);
+    }
+    return new int[0];
+}
+
+private int find(int[] parent, int x) {
+    while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }  // path compression
+    return x;
+}
+```
+
+Since edges are given in order, the *first* one joining two already-connected nodes is the answer the problem asks for.
+
+- **Time:** near O(n). **Space:** O(n).
+
+**Prep note.** Union-Find shines at "which edge creates a cycle?" — the moment `find(a) == find(b)`, that edge is redundant. This is also the core of Kruskal's MST.
+
+---
+
+## 4. Word Ladder
+
+> Shortest transformation from `beginWord` to `endWord`, changing one letter at a time, each step a word in the dictionary.
+
+Model words as nodes, with edges between words differing by one letter — then it's **shortest path = BFS**. Generate neighbors by trying all 26 letters at each position; a wordlist `HashSet` gives O(1) membership.
+
+```java
+public int ladderLength(String beginWord, String endWord, List<String> wordList) {
+    Set<String> dict = new HashSet<>(wordList);
+    if (!dict.contains(endWord)) return 0;
+    Queue<String> q = new LinkedList<>();
+    q.offer(beginWord);
+    int steps = 1;
+    while (!q.isEmpty()) {
+        for (int i = q.size(); i > 0; i--) {          // one BFS level = one transformation
+            String word = q.poll();
+            if (word.equals(endWord)) return steps;
+            char[] chars = word.toCharArray();
+            for (int j = 0; j < chars.length; j++) {
+                char original = chars[j];
+                for (char c = 'a'; c <= 'z'; c++) {
+                    chars[j] = c;
+                    String next = new String(chars);
+                    if (dict.remove(next)) q.offer(next);   // remove = mark visited
+                }
+                chars[j] = original;
+            }
+        }
+        steps++;
+    }
+    return 0;
+}
+```
+
+`dict.remove(next)` doubles as the visited check — a word consumed once can't be revisited, keeping BFS from looping.
+
+- **Time:** O(N · L · 26) for N words of length L. **Space:** O(N · L).
+
+**Prep note.** The insight is *modeling*: "one-letter-apart words" as graph edges turns a puzzle into plain shortest-path BFS. Bidirectional BFS (search from both ends) roughly halves the frontier — a strong optimization to mention.
+
+---
+
+## The pattern, in one line
+
+Graph variety reduces to core moves: **flood from the border** (solve the complement), **topological sort** for ordering, **Union-Find** for the cycle-closing edge, and — once you **model states as nodes** — **BFS** for any shortest transformation.
+
+Next in **Part 11: Advanced Graphs** — weighted shortest paths and minimum spanning trees.

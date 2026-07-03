@@ -1,0 +1,164 @@
+---
+title: "NeetCode 150 in Java — Part 9: N-Queens & Graphs I"
+date: "2026-07-28"
+excerpt: "N-Queens, Max Area of Island, Rotting Oranges, and Walls and Gates. Constraint-set backtracking, DFS area, and multi-source BFS that expands from many origins at once."
+tags: ["dsa", "java", "backtracking", "graphs", "bfs", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 9
+---
+
+# N-Queens & Graphs I
+
+**Part 9.** One capstone backtracking problem, then the grid-graph patterns: **DFS for area**, and **multi-source BFS** — seeding a queue with *every* origin so a wave spreads from all of them simultaneously.
+
+---
+
+## 1. N-Queens
+
+> Place `n` queens on an n×n board so none attack each other; return the number of solutions.
+
+Place one queen per row, backtracking column by column. Track threatened **columns and both diagonals** in three sets so each placement check is O(1). A diagonal is identified by `row − col` (constant along `↘`) and `row + col` (constant along `↙`).
+
+```java
+private int count;
+
+public int totalNQueens(int n) {
+    count = 0;
+    solve(0, n, new boolean[n], new boolean[2*n], new boolean[2*n]);
+    return count;
+}
+
+private void solve(int row, int n, boolean[] cols, boolean[] diag, boolean[] anti) {
+    if (row == n) { count++; return; }               // all rows placed
+    for (int col = 0; col < n; col++) {
+        int d = row - col + n, a = row + col;        // diagonal ids (offset to stay non-negative)
+        if (cols[col] || diag[d] || anti[a]) continue;
+        cols[col] = diag[d] = anti[a] = true;        // choose
+        solve(row + 1, n, cols, diag, anti);         // explore
+        cols[col] = diag[d] = anti[a] = false;       // un-choose
+    }
+}
+```
+
+The three boolean sets turn "is this square attacked?" into three array reads — the key to making the search fast.
+
+- **Time:** O(n!) roughly, heavily pruned. **Space:** O(n).
+
+**Prep note.** The diagonal encodings (`row − col`, `row + col`) are the crux and worth memorizing. Offsetting `row − col` by `n` keeps the index non-negative for the array.
+
+---
+
+## 2. Max Area of Island
+
+> Return the area of the largest island (connected `1`s) in a grid.
+
+Island DFS (from Blind 75) that **returns a count** instead of just marking. Each flood returns the size of the island it sank; track the maximum.
+
+```java
+public int maxAreaOfIsland(int[][] grid) {
+    int best = 0;
+    for (int r = 0; r < grid.length; r++)
+        for (int c = 0; c < grid[0].length; c++)
+            if (grid[r][c] == 1) best = Math.max(best, area(grid, r, c));
+    return best;
+}
+
+private int area(int[][] g, int r, int c) {
+    if (r < 0 || r >= g.length || c < 0 || c >= g[0].length || g[r][c] == 0) return 0;
+    g[r][c] = 0;                                      // sink to mark visited
+    return 1 + area(g, r+1, c) + area(g, r-1, c) + area(g, r, c+1) + area(g, r, c-1);
+}
+```
+
+Returning `1 + sum of four directions` accumulates the island's size as the recursion unwinds.
+
+- **Time:** O(m·n). **Space:** O(m·n) recursion.
+
+**Prep note.** Same flood-fill as Number of Islands; the only change is returning an accumulated count rather than incrementing a counter. Small tweak, different question.
+
+---
+
+## 3. Rotting Oranges
+
+> Each minute, rotten oranges rot their fresh neighbors. Return minutes until none are fresh, or `−1`.
+
+This is **multi-source BFS**: seed the queue with **all** initially-rotten oranges, then expand level by level — each level is one minute. Count fresh oranges to detect any that can't be reached.
+
+```java
+public int orangesRotting(int[][] grid) {
+    Queue<int[]> q = new LinkedList<>();
+    int fresh = 0;
+    for (int r = 0; r < grid.length; r++)
+        for (int c = 0; c < grid[0].length; c++) {
+            if (grid[r][c] == 2) q.offer(new int[]{r, c});  // every rotten source at once
+            else if (grid[r][c] == 1) fresh++;
+        }
+
+    int minutes = 0;
+    int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};
+    while (!q.isEmpty() && fresh > 0) {
+        minutes++;
+        for (int i = q.size(); i > 0; i--) {          // process one whole minute
+            int[] cell = q.poll();
+            for (int[] d : dirs) {
+                int nr = cell[0] + d[0], nc = cell[1] + d[1];
+                if (nr >= 0 && nr < grid.length && nc >= 0 && nc < grid[0].length && grid[nr][nc] == 1) {
+                    grid[nr][nc] = 2; fresh--;
+                    q.offer(new int[]{nr, nc});
+                }
+            }
+        }
+    }
+    return fresh == 0 ? minutes : -1;                  // leftover fresh ⇒ unreachable
+}
+```
+
+Starting BFS from *all* sources means the wave spreads outward from every rotten orange in lockstep — exactly how time flows here.
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** Multi-source BFS = seed the queue with every source before the loop. It's the go-to for "spread from all X simultaneously" and "nearest X to each cell" problems.
+
+---
+
+## 4. Walls and Gates
+
+> Fill each empty room with its distance to the nearest gate (`∞` if unreachable).
+
+Again multi-source BFS, seeded with **every gate**. Expand outward; the first time BFS reaches a room is necessarily its shortest distance, so you write it once and never revisit.
+
+```java
+public void wallsAndGates(int[][] rooms) {
+    Queue<int[]> q = new LinkedList<>();
+    for (int r = 0; r < rooms.length; r++)
+        for (int c = 0; c < rooms[0].length; c++)
+            if (rooms[r][c] == 0) q.offer(new int[]{r, c});   // all gates are sources
+
+    int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};
+    while (!q.isEmpty()) {
+        int[] cell = q.poll();
+        for (int[] d : dirs) {
+            int nr = cell[0] + d[0], nc = cell[1] + d[1];
+            if (nr >= 0 && nr < rooms.length && nc >= 0 && nc < rooms[0].length
+                    && rooms[nr][nc] == Integer.MAX_VALUE) {   // only untouched empty rooms
+                rooms[nr][nc] = rooms[cell[0]][cell[1]] + 1;
+                q.offer(new int[]{nr, nc});
+            }
+        }
+    }
+}
+```
+
+Because BFS reaches each room in nondecreasing distance order, the first write is the minimum — no need for a separate distance comparison.
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** Rotting Oranges and Walls and Gates are the *same algorithm* — multi-source BFS from all sources — asked two ways ("time to fill" vs. "distance to nearest"). Recognizing them as one saves you learning two.
+
+---
+
+## The pattern, in one line
+
+Constraint problems (N-Queens) are backtracking with **O(1) conflict sets**; grid area is **flood-fill that returns a count**; and "spread from all sources" or "distance to nearest source" is **multi-source BFS** — seed the queue with every origin, then expand level by level.
+
+Next in **Part 10: Graphs II** — border tricks, course ordering, cycle-causing edges, and word ladders.
