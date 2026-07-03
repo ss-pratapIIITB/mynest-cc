@@ -1,0 +1,89 @@
+---
+title: "NeetCode 150 in Java — Part 18: Bit Manipulation (Finale)"
+date: "2026-08-06"
+excerpt: "Single Number and Reverse Integer — the last two problems — plus a look back at the pattern map that ties the whole Blind 75 and NeetCode 150 together."
+tags: ["dsa", "java", "bit-manipulation", "xor", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 18
+---
+
+# Bit Manipulation (Finale)
+
+**Part 18** — the last two problems, then a step back to see the whole map. Bit tricks close the series the way they opened Blind 75's finale: with XOR's cancellation and careful overflow handling.
+
+---
+
+## 1. Single Number
+
+> Every element appears twice except one. Find the single one, in O(1) space.
+
+Pure XOR. Since `a ^ a = 0` and `a ^ 0 = a`, XORing the entire array cancels every pair and leaves only the lone element. Order doesn't matter — XOR is commutative and associative.
+
+```java
+public int singleNumber(int[] nums) {
+    int result = 0;
+    for (int n : nums) result ^= n;   // pairs cancel to 0; the unique value survives
+    return result;
+}
+```
+
+No hash set, no sorting — the two XOR identities do all the work in a single pass with a single integer of state.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** This is the purest expression of "XOR cancels duplicates." The variants — one number appearing three times, or two singles — build directly on this and are worth knowing as a family.
+
+---
+
+## 2. Reverse Integer
+
+> Reverse the digits of a signed 32-bit integer; return 0 on overflow.
+
+Peel digits off the end with `% 10` and build the reversed number, but **check for overflow before each push**. If the running result would exceed the 32-bit range once multiplied by 10, bail out with 0.
+
+```java
+public int reverse(int x) {
+    int result = 0;
+    while (x != 0) {
+        int digit = x % 10;           // works for negatives too in Java
+        x /= 10;
+        // overflow check BEFORE result = result * 10 + digit
+        if (result > Integer.MAX_VALUE / 10 || (result == Integer.MAX_VALUE / 10 && digit > 7))
+            return 0;
+        if (result < Integer.MIN_VALUE / 10 || (result == Integer.MIN_VALUE / 10 && digit < -8))
+            return 0;
+        result = result * 10 + digit;
+    }
+    return result;
+}
+```
+
+Checking against `Integer.MAX_VALUE / 10` *before* the multiply is the only safe way — once the overflow happens, the value is already corrupted.
+
+- **Time:** O(log x) (number of digits). **Space:** O(1).
+
+**Prep note.** The overflow guard is the entire problem. The `> 7` / `< -8` boundary digits come from the last digit of `Integer.MAX_VALUE` (2147483647) and `MIN_VALUE` (−2147483648). Java's `%` keeping the sign is what lets one loop handle negatives.
+
+---
+
+## The whole map
+
+That completes both series — **Blind 75** (19 parts) and **NeetCode 150** (18 parts), every problem in Java with one reusable pattern each. The individual answers were never the point. The point was building a lookup table in your head from *problem phrasing* to *technique*:
+
+- **"Seen it before? / count of? / group by?"** → hashing
+- **"Sorted or symmetric? pair/triple?"** → two pointers
+- **"Longest/shortest contiguous?"** → sliding window
+- **"Next greater/smaller? nesting?"** → stack (often monotonic)
+- **"Monotonic space? smallest that works?"** → binary search (incl. on the answer)
+- **"Top/kth/merge-k/median?"** → heap (or quickselect)
+- **"All combinations/permutations/partitions?"** → backtracking
+- **"Connected? reachable? shortest unweighted?"** → BFS/DFS, union-find
+- **"Shortest weighted? cheapest? MST?"** → Dijkstra / Bellman-Ford / Prim's
+- **"Dependencies / ordering?"** → topological sort
+- **"Overlapping subproblems / optimal substructure?"** → dynamic programming
+- **"Provably safe local choice?"** → greedy
+- **"Pairs cancel? bit-level?"** → XOR and bit tricks
+
+Speed on these problems isn't about memorizing 150 solutions. It's about reading a new problem, hearing which of those phrases it echoes, and reaching for the pattern before you write a line. Recognition first, code second — that's the whole skill.
+
+For the same problems as a searchable, expandable reference — with statements, follow-ups, and copyable Java — see the [Practice section](/practice).

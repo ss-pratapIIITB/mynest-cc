@@ -1,0 +1,145 @@
+---
+title: "NeetCode 150 in Java — Part 17: Math & Geometry"
+date: "2026-08-05"
+excerpt: "Plus One, Pow(x, n), Multiply Strings, and Detect Squares. Carry propagation, binary exponentiation, grade-school multiplication without BigInteger, and counting squares with a point map."
+tags: ["dsa", "java", "math", "geometry", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 17
+---
+
+# Math & Geometry
+
+**Part 17.** Number and coordinate problems that reward a clean trick over brute force: **carry propagation**, **binary exponentiation** (halving the exponent), **digit-by-digit multiplication**, and **counting geometry with a hash map**.
+
+---
+
+## 1. Plus One
+
+> Given a number as a digit array, add one and return the new digit array.
+
+Walk from the least-significant digit. If a digit is less than 9, increment and you're done. If it's 9, it becomes 0 and the carry propagates left. If every digit was 9, the result grows by one digit (a leading 1).
+
+```java
+public int[] plusOne(int[] digits) {
+    for (int i = digits.length - 1; i >= 0; i--) {
+        if (digits[i] < 9) { digits[i]++; return digits; }  // no carry → done
+        digits[i] = 0;                                       // 9 → 0, carry continues left
+    }
+    int[] res = new int[digits.length + 1];                  // all 9s → e.g. 999 + 1 = 1000
+    res[0] = 1;
+    return res;
+}
+```
+
+Returning early on the first non-9 digit handles every case except the all-9s overflow, which needs one extra leading slot.
+
+- **Time:** O(n). **Space:** O(1) (or O(n) on the all-9s case).
+
+**Prep note.** The all-9s case (`999 → 1000`) is the one people forget. Handling it *after* the loop — as "the carry fell off the front" — keeps the main path clean.
+
+---
+
+## 2. Pow(x, n)
+
+> Compute `x` raised to the power `n` (n can be negative) in O(log n).
+
+**Binary exponentiation.** Square the base and halve the exponent: if the current exponent bit is set, fold the base into the result. This computes `xⁿ` in `log n` multiplications instead of `n`.
+
+```java
+public double myPow(double x, int n) {
+    long exp = n;                        // widen to avoid overflow on -Integer.MIN_VALUE
+    if (exp < 0) { x = 1 / x; exp = -exp; }
+    double result = 1;
+    while (exp > 0) {
+        if ((exp & 1) == 1) result *= x; // this bit of the exponent is set
+        x *= x;                          // square the base
+        exp >>= 1;                       // move to the next exponent bit
+    }
+    return result;
+}
+```
+
+Reading the exponent bit by bit and squaring the base each step is the log-time core — each doubling of the base covers one more power-of-two chunk of the exponent.
+
+- **Time:** O(log n). **Space:** O(1).
+
+**Prep note.** Widening `n` to `long` before negating avoids the `Integer.MIN_VALUE` overflow trap (its negation doesn't fit in an `int`). A classic edge case worth flagging.
+
+---
+
+## 3. Multiply Strings
+
+> Multiply two non-negative numbers given as strings, without `BigInteger`.
+
+Grade-school multiplication. The product of digits at positions `i` and `j` lands at result positions `i + j` and `i + j + 1`. Accumulate into an integer array sized `m + n`, carrying as you go, then stringify (dropping a leading zero).
+
+```java
+public String multiply(String num1, String num2) {
+    if (num1.equals("0") || num2.equals("0")) return "0";
+    int m = num1.length(), n = num2.length();
+    int[] prod = new int[m + n];
+    for (int i = m - 1; i >= 0; i--)
+        for (int j = n - 1; j >= 0; j--) {
+            int mul = (num1.charAt(i) - '0') * (num2.charAt(j) - '0');
+            int p1 = i + j, p2 = i + j + 1;
+            int sum = mul + prod[p2];             // add to the low position (plus prior carry)
+            prod[p2] = sum % 10;
+            prod[p1] += sum / 10;                 // carry into the high position
+        }
+    StringBuilder sb = new StringBuilder();
+    for (int d : prod) if (!(sb.length() == 0 && d == 0)) sb.append(d);  // skip leading zero
+    return sb.toString();
+}
+```
+
+The position rule `i + j` / `i + j + 1` is the crux — it places each partial product where it belongs without tracking place value separately.
+
+- **Time:** O(m·n). **Space:** O(m + n).
+
+**Prep note.** Knowing *why* digit product `(i, j)` lands at indices `i + j` and `i + j + 1` (low and carry) is what makes this reproducible. It's positional arithmetic made explicit.
+
+---
+
+## 4. Detect Squares
+
+> Support adding points and counting axis-aligned squares that include a given query point as a corner.
+
+Store a **count of each point** (points can repeat). To count squares with the query as one corner, iterate candidate diagonal points (same distance on x and y, forming a proper square), and multiply the counts of the other three corners.
+
+```java
+class CountSquares {
+    private final Map<Long, Integer> count = new HashMap<>();  // encoded point -> multiplicity
+    private final List<int[]> points = new ArrayList<>();
+
+    public void add(int[] point) {
+        count.merge(key(point[0], point[1]), 1, Integer::sum);
+        points.add(point);
+    }
+
+    public int count(int[] point) {
+        int px = point[0], py = point[1], total = 0;
+        for (int[] p : points) {
+            if (Math.abs(p[0] - px) != Math.abs(p[1] - py) || p[0] == px) continue; // must form a real square
+            total += count.getOrDefault(key(p[0], py), 0)     // the other two corners
+                   * count.getOrDefault(key(px, p[1]), 0);
+        }
+        return total;
+    }
+
+    private long key(int x, int y) { return ((long) x << 20) | (y & 0xFFFFF); }
+}
+```
+
+For each diagonal-corner candidate, multiplying the two remaining corners' counts tallies every square they can form — the multiplicities handle duplicate points automatically.
+
+- **Time:** O(n) per query. **Space:** O(n).
+
+**Prep note.** The square condition — equal x and y distance *and* nonzero (`p[0] != px`) — filters diagonals to true squares. Encoding a point as one `long` key is a clean way to hash coordinate pairs.
+
+---
+
+## The pattern, in one line
+
+Math problems reward the right mechanic: **carry propagation** (plus one, multiply), **binary exponentiation** (square-and-halve for log-time powers), and **counting geometry with a point map** — where multiplying corner counts tallies squares in one pass.
+
+Next in **Part 18: Bit Manipulation** — the two remaining bit tricks, and the close of the series.
