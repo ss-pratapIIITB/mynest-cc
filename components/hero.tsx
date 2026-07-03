@@ -196,7 +196,7 @@ export default function Hero() {
     if (!m || m.sTop0 === 0) return 0;
     const yFinal = m.navY - m.sTop0 + 80;
     if (s <= 80) return (s / 80) * yFinal;
-    return yFinal + (s - 80);
+    return yFinal;   // hold at the converged spot, then scroll away naturally with the hero
   });
 
   const pY = useTransform(scrollY, (s) => {
@@ -204,7 +204,7 @@ export default function Hero() {
     if (!m || m.pTop0 === 0) return 0;
     const yFinal = m.navY - m.pTop0 + 80;
     if (s <= 80) return (s / 80) * yFinal;
-    return yFinal + (s - 80);
+    return yFinal;   // hold at the converged spot, then scroll away naturally with the hero
   });
 
   const s2Y = useTransform(scrollY, (s) => {
@@ -212,14 +212,35 @@ export default function Hero() {
     if (!m || m.s2Top0 === 0) return 0;
     const yFinal = m.navY - m.s2Top0 + 80;
     if (s <= 80) return (s / 80) * yFinal;
-    return yFinal + (s - 80);
+    return yFinal;   // hold at the converged spot, then scroll away naturally with the hero
   });
 
   // X transforms: only during animation phase (no sticky needed horizontally)
   const pX  = useTransform(progress, (p) => p * (measuredRef.current?.pX  ?? 0));
   const s2X = useTransform(progress, (p) => p * (measuredRef.current?.s2X ?? 0));
 
+  // Once the in-flow name has converged to "SPS" it fades out; a fixed brand
+  // takes over and stays sticky at the top-left (like the nav links) until you
+  // scroll back up to reveal the full name again.
+  const nameOpacity = useTransform(scrollY, [0, 100, 160], [1, 1, 0]);
+  const fixedOpacity = useTransform(scrollY, [100, 160], [0, 1]);
+  const fixedPointer = useTransform(scrollY, (s) => (s > 130 ? "auto" : "none"));
+
   return (
+    <>
+      {/* Sticky SPS brand — fixed at top-left, appears once the name compresses */}
+      <motion.button
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        style={{ opacity: fixedOpacity, pointerEvents: fixedPointer }}
+        className="fixed top-0 left-0 z-50 px-6 sm:px-10 py-4 flex items-baseline gap-px group"
+        aria-label="Scroll to top"
+      >
+        <span className="text-lg font-bold tracking-tight text-zinc-900 dark:text-zinc-100 group-hover:text-violet-600 dark:group-hover:text-violet-400 transition-colors">
+          SPS
+        </span>
+        <span className="text-violet-500 dark:text-violet-400 text-lg font-bold">.</span>
+      </motion.button>
+
     <section className="flex-1 flex lg:items-center px-6 sm:px-10 pt-28 pb-16 max-w-[1100px] mx-auto w-full">
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-12 lg:gap-20 items-center w-full">
 
@@ -256,13 +277,13 @@ export default function Hero() {
               <div className="absolute inset-0 overflow-visible">
                 <h1 className="text-[3.4rem] sm:text-[4.2rem] lg:text-[5rem] font-bold tracking-[-0.03em] leading-[0.92] overflow-visible">
                   {/* Line 1: S = black, urendra = grey */}
-                  <motion.span ref={sRef} style={{ display: "inline-block", y: sY }} className="text-zinc-900 dark:text-zinc-100">S</motion.span><motion.span style={{ display: "inline-block", opacity: trailOpacity }} className="text-zinc-400 dark:text-zinc-500">urendra</motion.span>
+                  <motion.span ref={sRef} style={{ display: "inline-block", y: sY, opacity: nameOpacity }} className="text-zinc-900 dark:text-zinc-100">S</motion.span><motion.span style={{ display: "inline-block", opacity: trailOpacity }} className="text-zinc-400 dark:text-zinc-500">urendra</motion.span>
                   <br />
                   {/* Line 2: P = black, ratap = grey */}
-                  <motion.span ref={pRef} style={{ display: "inline-block", x: pX, y: pY }} className="text-zinc-900 dark:text-zinc-100">P</motion.span><motion.span style={{ display: "inline-block", opacity: trailOpacity }} className="text-zinc-400 dark:text-zinc-500">ratap</motion.span>
+                  <motion.span ref={pRef} style={{ display: "inline-block", x: pX, y: pY, opacity: nameOpacity }} className="text-zinc-900 dark:text-zinc-100">P</motion.span><motion.span style={{ display: "inline-block", opacity: trailOpacity }} className="text-zinc-400 dark:text-zinc-500">ratap</motion.span>
                   <br />
                   {/* Line 3: S = black. Dot is position:absolute so it takes zero layout space → no gap before ingh. */}
-                  <motion.span ref={s2Ref} style={{ display: "inline-block", position: "relative", x: s2X, y: s2Y }} className="text-zinc-900 dark:text-zinc-100">S<motion.span className="text-zinc-400 dark:text-zinc-500" style={{ opacity: dotOpacity, position: "absolute", left: "100%", top: 0 }}>.</motion.span></motion.span><motion.span style={{ display: "inline-block", opacity: trailOpacity }} className="text-zinc-400 dark:text-zinc-500">ingh.</motion.span>
+                  <motion.span ref={s2Ref} style={{ display: "inline-block", position: "relative", x: s2X, y: s2Y, opacity: nameOpacity }} className="text-zinc-900 dark:text-zinc-100">S<motion.span className="text-zinc-400 dark:text-zinc-500" style={{ opacity: dotOpacity, position: "absolute", left: "100%", top: 0 }}>.</motion.span></motion.span><motion.span style={{ display: "inline-block", opacity: trailOpacity }} className="text-zinc-400 dark:text-zinc-500">ingh.</motion.span>
                 </h1>
               </div>
             </div>
@@ -372,5 +393,6 @@ export default function Hero() {
         </motion.div>
       </div>
     </section>
+    </>
   );
 }
