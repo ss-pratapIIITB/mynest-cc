@@ -1,0 +1,175 @@
+---
+title: "Blind 75 in Java — Part 13: Backtracking & Trie"
+date: "2026-07-13"
+excerpt: "Subsets, Combination Sum, Word Search II, and Add and Search Words. The choose → explore → un-choose template, and pairing a Trie with DFS to search many words at once."
+tags: ["dsa", "java", "backtracking", "trie", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 13
+---
+
+# Backtracking & Trie
+
+**Part 13.** One template powers all of backtracking: **choose → explore → un-choose.** You build a partial solution, recurse, then undo the choice to try the next. The last two problems combine that with the **Trie** from Part 12 to search many words over a grid at once.
+
+---
+
+## 1. Subsets
+
+> Return all subsets of a distinct-integer array (the power set).
+
+The canonical template. A `start` index enforces order so you never revisit earlier elements. Every node in the recursion *is* a valid subset, so record the path at each call; then for each later element, choose it, explore, and un-choose.
+
+```java
+public List<List<Integer>> subsets(int[] nums) {
+    List<List<Integer>> res = new ArrayList<>();
+    backtrack(nums, 0, new ArrayList<>(), res);
+    return res;
+}
+
+private void backtrack(int[] nums, int start, List<Integer> path, List<List<Integer>> res) {
+    res.add(new ArrayList<>(path));                 // every node is a subset
+    for (int i = start; i < nums.length; i++) {
+        path.add(nums[i]);                          // choose
+        backtrack(nums, i + 1, path, res);          // explore (i+1 avoids reuse)
+        path.remove(path.size() - 1);               // un-choose
+    }
+}
+```
+
+Copying the path with `new ArrayList<>(path)` when recording is essential — the same `path` object keeps mutating as recursion continues.
+
+- **Time:** O(n · 2ⁿ). **Space:** O(n) recursion depth.
+
+**Prep note.** Internalize this exact shape. Permutations swaps the `start` index for a `used[]` array; combinations stop at a fixed size. Same skeleton, small tweak.
+
+---
+
+## 2. Combination Sum
+
+> Return all unique combinations of `candidates` (reusable) that sum to `target`.
+
+Backtracking with a twist: since numbers can repeat, recurse with `i` (not `i + 1`) so the same element can be chosen again. Prune when the remaining target goes negative.
+
+```java
+public List<List<Integer>> combinationSum(int[] candidates, int target) {
+    List<List<Integer>> res = new ArrayList<>();
+    backtrack(candidates, 0, target, new ArrayList<>(), res);
+    return res;
+}
+
+private void backtrack(int[] c, int start, int remain, List<Integer> path, List<List<Integer>> res) {
+    if (remain == 0) { res.add(new ArrayList<>(path)); return; }
+    if (remain < 0) return;                          // overshot — prune
+    for (int i = start; i < c.length; i++) {
+        path.add(c[i]);
+        backtrack(c, i, remain - c[i], path, res);   // i (not i+1) → reuse allowed
+        path.remove(path.size() - 1);
+    }
+}
+```
+
+Passing `i` instead of `i + 1` is the entire difference between "each element once" and "each element unlimited."
+
+- **Time:** exponential in target/candidates. **Space:** O(target/min) depth.
+
+**Prep note.** Sorting `candidates` first lets you `break` (not `continue`) once `c[i] > remain`, pruning whole branches. A small optimization worth stating.
+
+---
+
+## 3. Word Search II
+
+> Given a grid and a list of words, return all words that appear along adjacent paths.
+
+Running single Word Search (Part 7) per word is too slow. Instead, build a **Trie of all the words**, then DFS the grid *once* — at each cell, walk the Trie in lockstep. A cell only continues if the Trie has that letter, so dead branches die immediately.
+
+```java
+public List<String> findWords(char[][] board, String[] words) {
+    TrieNode root = new TrieNode();
+    for (String w : words) {                         // build the Trie
+        TrieNode node = root;
+        for (char c : w.toCharArray()) {
+            node = node.children.computeIfAbsent(c, k -> new TrieNode());
+        }
+        node.word = w;
+    }
+    List<String> res = new ArrayList<>();
+    for (int r = 0; r < board.length; r++)
+        for (int c = 0; c < board[0].length; c++)
+            dfs(board, r, c, root, res);
+    return res;
+}
+
+private void dfs(char[][] b, int r, int c, TrieNode node, List<String> res) {
+    if (r < 0 || r >= b.length || c < 0 || c >= b[0].length) return;
+    char ch = b[r][c];
+    TrieNode next = (ch == '#') ? null : node.children.get(ch);
+    if (next == null) return;                         // no word continues this way
+    if (next.word != null) { res.add(next.word); next.word = null; } // found; de-dupe
+
+    b[r][c] = '#';                                    // mark visited
+    dfs(b, r + 1, c, next, res); dfs(b, r - 1, c, next, res);
+    dfs(b, r, c + 1, next, res); dfs(b, r, c - 1, next, res);
+    b[r][c] = ch;                                     // un-mark
+}
+
+class TrieNode { Map<Character, TrieNode> children = new HashMap<>(); String word; }
+```
+
+Storing the full word on its terminal node (instead of an `isEnd` flag) means a hit adds the word directly; nulling it afterward de-duplicates.
+
+- **Time:** O(cells · 4^maxLen), but the Trie prunes aggressively in practice. **Space:** O(total word chars).
+
+**Prep note.** The Trie flips the complexity from "words × grid searches" to "one grid search guided by all words." That reframing is the reason this problem pairs Trie with backtracking.
+
+---
+
+## 4. Add and Search Words
+
+> Design a structure supporting `addWord` and `search`, where `.` in a search matches any single letter.
+
+A Trie handles `addWord` normally. For `search`, a `.` means **branch into every child** — so search becomes a small DFS over the Trie whenever it hits a wildcard.
+
+```java
+class WordDictionary {
+    private final WordDictionary[] children = new WordDictionary[26];
+    private boolean isEnd = false;
+
+    public void addWord(String word) {
+        WordDictionary node = this;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new WordDictionary();
+            node = node.children[i];
+        }
+        node.isEnd = true;
+    }
+
+    public boolean search(String word) { return dfs(word, 0); }
+
+    private boolean dfs(String word, int i) {
+        if (i == word.length()) return isEnd;
+        char c = word.charAt(i);
+        if (c == '.') {                                // wildcard: try every child
+            for (WordDictionary child : children)
+                if (child != null && child.dfs(word, i + 1)) return true;
+            return false;
+        }
+        WordDictionary next = children[c - 'a'];       // normal: follow the one edge
+        return next != null && next.dfs(word, i + 1);
+    }
+}
+```
+
+The only difference from a plain Trie search is the wildcard branch — a fan-out over all 26 children instead of one lookup.
+
+- **Time:** O(L) typical; O(26ᴸ) worst case with all wildcards. **Space:** O(total chars).
+
+**Prep note.** This is the "Trie + DFS" pattern in miniature — wildcards turn a linear walk into a bounded tree search. Same idea, smaller than Word Search II.
+
+---
+
+## The pattern, in one line
+
+Backtracking is always **choose → explore → un-choose** over a `start` index or `used[]` set. And a **Trie fused with DFS** lets you match many patterns at once — searching a grid for a whole dictionary, or resolving wildcards — by walking the tree in lockstep with the search.
+
+Next in **Part 14: Graphs I** — islands, cloning, cycle detection, and multi-source flow.

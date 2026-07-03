@@ -1,0 +1,138 @@
+---
+title: "Blind 75 in Java — Part 16: Intervals"
+date: "2026-07-16"
+excerpt: "Insert Interval, Merge Intervals, Non-overlapping Intervals, and Meeting Rooms I & II. Almost every interval problem starts the same way: sort by an endpoint, then sweep once."
+tags: ["dsa", "java", "intervals", "sorting", "greedy", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 16
+---
+
+# Intervals
+
+**Part 16.** Interval problems share a spine: **sort by start (or end), then sweep once.** Sorting makes overlaps adjacent or lets a greedy choice be provably optimal. Learn the sweep, and this whole category collapses into variations on "compare the current interval to the previous one."
+
+---
+
+## 1. Insert Interval
+
+> Given sorted, non-overlapping intervals and a new one, insert it and merge as needed.
+
+Because the input is already sorted, sweep in three phases: copy everything that ends **before** the new interval starts, **merge** everything that overlaps the new interval (widening it), then copy the rest.
+
+```java
+public int[][] insert(int[][] intervals, int[] newInterval) {
+    List<int[]> res = new ArrayList<>();
+    int i = 0, n = intervals.length;
+
+    while (i < n && intervals[i][1] < newInterval[0]) res.add(intervals[i++]); // ends before new
+    while (i < n && intervals[i][0] <= newInterval[1]) {                       // overlaps → merge
+        newInterval[0] = Math.min(newInterval[0], intervals[i][0]);
+        newInterval[1] = Math.max(newInterval[1], intervals[i][1]);
+        i++;
+    }
+    res.add(newInterval);
+    while (i < n) res.add(intervals[i++]);                                     // starts after new
+    return res.toArray(new int[0][]);
+}
+```
+
+No sort needed here — the input's existing order lets you do it in one linear pass.
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** The three-phase structure (before / overlapping / after) is worth naming out loud; it makes the logic obviously correct and easy to code without off-by-one slips.
+
+---
+
+## 2. Merge Intervals
+
+> Merge all overlapping intervals.
+
+**Sort by start.** Now overlaps are adjacent: walk through, and if the current interval starts at or before the last merged interval's end, extend that end; otherwise it's disjoint, so append it as new.
+
+```java
+public int[][] merge(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+    List<int[]> res = new ArrayList<>();
+    int[] cur = intervals[0];
+    res.add(cur);
+    for (int[] next : intervals) {
+        if (next[0] <= cur[1]) cur[1] = Math.max(cur[1], next[1]); // overlap → extend end
+        else { cur = next; res.add(cur); }                         // disjoint → start new
+    }
+    return res.toArray(new int[0][]);
+}
+```
+
+Keeping a reference to `cur` inside `res` means extending `cur[1]` updates the stored interval in place.
+
+- **Time:** O(n log n) for the sort. **Space:** O(n).
+
+**Prep note.** Use `Integer.compare(a[0], b[0])`, not `a[0] - b[0]` — subtraction overflows for large or negative coordinates. A detail worth getting right.
+
+---
+
+## 3. Non-overlapping Intervals
+
+> Return the minimum number of intervals to remove so the rest don't overlap.
+
+This is the classic **activity-selection** greedy: to keep the *most* intervals, always keep the one that **ends earliest**, because it leaves the most room for the rest. Sort by end; whenever the next interval starts before the last kept one ends, it must be removed.
+
+```java
+public int eraseOverlapIntervals(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[1], b[1])); // sort by END
+    int prevEnd = intervals[0][1], removed = 0;
+    for (int i = 1; i < intervals.length; i++) {
+        if (intervals[i][0] < prevEnd) removed++;        // overlaps last kept → remove this one
+        else prevEnd = intervals[i][1];                  // no overlap → keep, advance end
+    }
+    return removed;
+}
+```
+
+Sorting by **end** (not start) is the crux: the earliest-finishing interval is always safe to keep.
+
+- **Time:** O(n log n). **Space:** O(1).
+
+**Prep note.** "Keep max non-overlapping = remove min overlapping." Framing it as the well-known activity-selection greedy — and justifying *why* earliest-end is optimal — is what an examiner is listening for.
+
+---
+
+## 4. Meeting Rooms I & II
+
+> **I:** can one person attend all meetings (no overlaps)? **II:** minimum rooms needed for all meetings?
+
+**I** is a sort-by-start sweep: any meeting starting before the previous one ended is a conflict. **II** needs the maximum number of *simultaneous* meetings — cleanest via a **min-heap of end times**: for each meeting (sorted by start), free any room whose meeting has ended, then take a room; the peak heap size is the answer.
+
+```java
+public boolean canAttendMeetings(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+    for (int i = 1; i < intervals.length; i++)
+        if (intervals[i][0] < intervals[i - 1][1]) return false;  // starts before prev ends
+    return true;
+}
+
+public int minMeetingRooms(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+    PriorityQueue<Integer> ends = new PriorityQueue<>();          // min-heap of end times
+    for (int[] m : intervals) {
+        if (!ends.isEmpty() && ends.peek() <= m[0]) ends.poll();  // a room freed up
+        ends.offer(m[1]);                                          // occupy a room
+    }
+    return ends.size();                                           // rooms held at the peak
+}
+```
+
+The heap always holds exactly the meetings currently in progress; its size when you finish is the maximum concurrency.
+
+- **Time:** O(n log n). **Space:** O(n).
+
+**Prep note.** An alternative for II is the **sweep-line**: separate sorted start and end arrays, a `+1` at each start and `−1` at each end, tracking the running max. Same O(n log n), sometimes cleaner to explain.
+
+---
+
+## The pattern, in one line
+
+Interval problems are **sort, then sweep**: sort by **start** to make overlaps adjacent (merge, insert, attend-all), sort by **end** for the earliest-finish greedy (max non-overlapping), and reach for a **min-heap of end times** when you need maximum concurrency.
+
+Next in **Part 17: Dynamic Programming I** — defining state, and the 1D recurrences.

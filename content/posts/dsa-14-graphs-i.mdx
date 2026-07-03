@@ -1,0 +1,156 @@
+---
+title: "Blind 75 in Java — Part 14: Graphs I"
+date: "2026-07-14"
+excerpt: "Number of Islands, Clone Graph, Course Schedule, and Pacific Atlantic Water Flow. Grid DFS for components, hash-map cloning, cycle detection via topological sort, and multi-source reverse flooding."
+tags: ["dsa", "java", "graphs", "bfs", "dfs", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 14
+---
+
+# Graphs I
+
+**Part 14.** Graph problems reduce to a few moves: **flood a region** (DFS/BFS from a seed), **track visited** so you never loop, and — for dependencies — **detect cycles** with topological sort. The last problem introduces the *multi-source, reverse-the-flow* trick worth stealing.
+
+---
+
+## 1. Number of Islands
+
+> Count connected groups of `'1'` (land) in a grid of `'1'`/`'0'`.
+
+Every unvisited land cell starts a new island; flood it entirely (DFS in four directions) so it's counted once, sinking each visited cell to `'0'` to mark it. The count of flood *starts* is the number of islands.
+
+```java
+public int numIslands(char[][] grid) {
+    int count = 0;
+    for (int r = 0; r < grid.length; r++)
+        for (int c = 0; c < grid[0].length; c++)
+            if (grid[r][c] == '1') { count++; sink(grid, r, c); }
+    return count;
+}
+
+private void sink(char[][] g, int r, int c) {
+    if (r < 0 || r >= g.length || c < 0 || c >= g[0].length || g[r][c] != '1') return;
+    g[r][c] = '0';                                   // mark visited by sinking
+    sink(g, r + 1, c); sink(g, r - 1, c); sink(g, r, c + 1); sink(g, r, c - 1);
+}
+```
+
+Mutating the grid to `'0'` is a free visited-set — no extra array needed.
+
+- **Time:** O(m·n). **Space:** O(m·n) recursion worst case.
+
+**Prep note.** If mutating the input is off-limits, use a separate `boolean[][] seen`. BFS with a queue avoids deep recursion on a giant single-island grid that could overflow the stack.
+
+---
+
+## 2. Clone Graph
+
+> Deep-copy a connected undirected graph of nodes with neighbor lists.
+
+Traverse (DFS or BFS) while keeping a **map from original node → its clone**. The map does double duty: it remembers what you've already cloned (so shared/cyclic neighbors aren't re-created) *and* it's your visited-set.
+
+```java
+public Node cloneGraph(Node node) {
+    if (node == null) return null;
+    Map<Node, Node> clones = new HashMap<>();
+    return dfs(node, clones);
+}
+
+private Node dfs(Node node, Map<Node, Node> clones) {
+    if (clones.containsKey(node)) return clones.get(node);   // already cloned → reuse
+    Node copy = new Node(node.val);
+    clones.put(node, copy);                                  // record BEFORE recursing (handles cycles)
+    for (Node nb : node.neighbors) copy.neighbors.add(dfs(nb, clones));
+    return copy;
+}
+```
+
+Putting the clone in the map *before* recursing into neighbors is what stops infinite loops on cycles.
+
+- **Time:** O(V + E). **Space:** O(V).
+
+**Prep note.** The order matters: create clone, register it, *then* recurse. Register-after-recurse would loop forever on the first cycle. This "map = memo + visited" idea recurs in many graph copies.
+
+---
+
+## 3. Course Schedule
+
+> Given `numCourses` and prerequisite pairs, can you finish all courses? (i.e., is the dependency graph acyclic?)
+
+This is **cycle detection on a directed graph**, cleanest via Kahn's topological sort: compute in-degrees, start from all zero-in-degree nodes, and peel them off. If you can process all `n` nodes, there's no cycle; if some remain stuck, a cycle blocks them.
+
+```java
+public boolean canFinish(int numCourses, int[][] prerequisites) {
+    List<List<Integer>> adj = new ArrayList<>();
+    int[] indeg = new int[numCourses];
+    for (int i = 0; i < numCourses; i++) adj.add(new ArrayList<>());
+    for (int[] p : prerequisites) { adj.get(p[1]).add(p[0]); indeg[p[0]]++; }
+
+    Queue<Integer> q = new LinkedList<>();
+    for (int i = 0; i < numCourses; i++) if (indeg[i] == 0) q.offer(i);
+
+    int done = 0;
+    while (!q.isEmpty()) {
+        int cur = q.poll();
+        done++;
+        for (int next : adj.get(cur))
+            if (--indeg[next] == 0) q.offer(next);
+    }
+    return done == numCourses;                       // all processed → acyclic
+}
+```
+
+Decrementing a neighbor's in-degree and enqueuing it at zero is exactly "this prerequisite is now satisfied."
+
+- **Time:** O(V + E). **Space:** O(V + E).
+
+**Prep note.** Course Schedule II asks for the *order* — return the sequence in which nodes were dequeued (empty if a cycle). Same algorithm, record the order.
+
+---
+
+## 4. Pacific Atlantic Water Flow
+
+> Water flows from a cell to equal-or-lower neighbors. Return cells from which water can reach **both** the Pacific (top/left) and Atlantic (bottom/right) edges.
+
+Don't simulate flow from every cell — **reverse it.** Flood *inward* from each ocean's border, climbing to equal-or-higher cells (the reverse of flowing down). Cells reachable in *both* floods are the answer.
+
+```java
+public List<List<Integer>> pacificAtlantic(int[][] heights) {
+    int m = heights.length, n = heights[0].length;
+    boolean[][] pac = new boolean[m][n], atl = new boolean[m][n];
+    for (int r = 0; r < m; r++) { flow(heights, r, 0, pac); flow(heights, r, n - 1, atl); }
+    for (int c = 0; c < n; c++) { flow(heights, 0, c, pac); flow(heights, m - 1, c, atl); }
+
+    List<List<Integer>> res = new ArrayList<>();
+    for (int r = 0; r < m; r++)
+        for (int c = 0; c < n; c++)
+            if (pac[r][c] && atl[r][c]) res.add(Arrays.asList(r, c));
+    return res;
+}
+
+private void flow(int[][] h, int r, int c, boolean[][] seen) {
+    seen[r][c] = true;
+    int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};
+    for (int[] d : dirs) {
+        int nr = r + d[0], nc = c + d[1];
+        if (nr >= 0 && nr < h.length && nc >= 0 && nc < h[0].length
+                && !seen[nr][nc] && h[nr][nc] >= h[r][c]) {   // climb (reverse flow)
+            flow(h, nr, nc, seen);
+        }
+    }
+}
+```
+
+Two floods from the borders (O(m·n) total) replace a separate search from every cell (O((m·n)²)).
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** "Reverse the direction and start from the goal" is a powerful reframing — here it turns a per-cell search into two border floods. Watch for it whenever "reach the edge/target from anywhere" is the question.
+
+---
+
+## The pattern, in one line
+
+Graphs are **flood + visited-set**, with **topological sort** for dependency/cycle questions. When "from every source" is expensive, ask whether you can **reverse the flow and flood from the destinations** instead.
+
+Next in **Part 15: Graphs II** — union-find, tree validation, and ordering from partial clues.

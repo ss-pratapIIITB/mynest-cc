@@ -1,0 +1,159 @@
+---
+title: "Blind 75 in Java — Part 15: Graphs II (Union-Find & Topo Sort)"
+date: "2026-07-15"
+excerpt: "Number of Connected Components, Graph Valid Tree, Alien Dictionary, and Longest Consecutive Sequence. Union-Find for connectivity, and building a topological order from pairwise clues."
+tags: ["dsa", "java", "graphs", "union-find", "topological-sort", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 15
+---
+
+# Graphs II
+
+**Part 15.** Two more graph tools. **Union-Find (DSU)** answers connectivity questions in near-constant time and is worth memorizing as a unit. And **topological sort** returns to derive a global order from local "a before b" clues. We close with a problem that *looks* like an array but is secretly about connected runs.
+
+---
+
+## 1. Number of Connected Components
+
+> Given `n` nodes and an edge list, count connected components.
+
+**Union-Find.** Start with `n` components; each edge that joins two *different* components merges them and drops the count by one. Path compression in `find` keeps operations near O(1).
+
+```java
+public int countComponents(int n, int[][] edges) {
+    int[] parent = new int[n];
+    for (int i = 0; i < n; i++) parent[i] = i;
+    int count = n;
+
+    for (int[] e : edges) {
+        int a = find(parent, e[0]), b = find(parent, e[1]);
+        if (a != b) { parent[a] = b; count--; }      // merge two components
+    }
+    return count;
+}
+
+private int find(int[] parent, int x) {
+    while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } // path compression
+    return x;
+}
+```
+
+The `if (a != b)` guard is what makes the count correct — edges *within* a component don't reduce it.
+
+- **Time:** near O(V + E) with compression. **Space:** O(V).
+
+**Prep note.** DFS/BFS also works: count how many flood-fills it takes to visit everything. Reach for Union-Find when edges arrive incrementally or you need repeated "are these two connected?" queries.
+
+---
+
+## 2. Graph Valid Tree
+
+> Given `n` nodes and edges, is the graph a valid tree?
+
+A tree is a connected, acyclic graph — which forces exactly **`n − 1` edges**. So check the edge count first (a cheap necessary condition), then use Union-Find: if any edge connects two nodes *already* in the same component, there's a cycle → not a tree.
+
+```java
+public boolean validTree(int n, int[][] edges) {
+    if (edges.length != n - 1) return false;         // tree must have exactly n-1 edges
+    int[] parent = new int[n];
+    for (int i = 0; i < n; i++) parent[i] = i;
+
+    for (int[] e : edges) {
+        int a = find(parent, e[0]), b = find(parent, e[1]);
+        if (a == b) return false;                     // both already connected → cycle
+        parent[a] = b;
+    }
+    return true;                                      // n-1 edges + no cycle ⇒ connected & acyclic
+}
+```
+
+With exactly `n − 1` edges and no cycle, the graph *must* also be connected — so those two checks together prove "tree."
+
+- **Time:** near O(V + E). **Space:** O(V).
+
+**Prep note.** The edge-count shortcut is the elegant part: `n − 1` edges plus acyclic *implies* connected, so you don't need a separate connectivity pass. State that reasoning explicitly.
+
+---
+
+## 3. Alien Dictionary
+
+> Given words sorted in an unknown alphabet's order, return a valid character order (or "" if impossible).
+
+Adjacent words reveal one ordering clue each: the first differing character says "this letter comes before that one." Build a graph from those clues, then **topological sort** it. A cycle means the ordering is contradictory.
+
+```java
+public String alienOrder(String[] words) {
+    Map<Character, Set<Character>> adj = new HashMap<>();
+    Map<Character, Integer> indeg = new HashMap<>();
+    for (String w : words) for (char c : w.toCharArray()) {
+        adj.putIfAbsent(c, new HashSet<>());
+        indeg.putIfAbsent(c, 0);
+    }
+    for (int i = 0; i < words.length - 1; i++) {
+        String a = words[i], b = words[i + 1];
+        if (a.length() > b.length() && a.startsWith(b)) return "";  // prefix-after-longer is invalid
+        for (int j = 0; j < Math.min(a.length(), b.length()); j++) {
+            char x = a.charAt(j), y = b.charAt(j);
+            if (x != y) {
+                if (adj.get(x).add(y)) indeg.merge(y, 1, Integer::sum); // first differing char = clue
+                break;                                                  // only the FIRST diff matters
+            }
+        }
+    }
+
+    Queue<Character> q = new LinkedList<>();
+    for (char c : indeg.keySet()) if (indeg.get(c) == 0) q.offer(c);
+    StringBuilder sb = new StringBuilder();
+    while (!q.isEmpty()) {
+        char c = q.poll();
+        sb.append(c);
+        for (char next : adj.get(c)) if (indeg.merge(next, -1, Integer::sum) == 0) q.offer(next);
+    }
+    return sb.length() == indeg.size() ? sb.toString() : "";   // leftover chars ⇒ cycle
+}
+```
+
+Two subtle rules: only the **first** differing character gives a clue (`break` after it), and a longer word before its own prefix (`"abc"` before `"ab"`) is an invalid ordering.
+
+- **Time:** O(total characters). **Space:** O(unique chars + clues).
+
+**Prep note.** This is topological sort applied to a graph you must *first construct from evidence*. The extraction of clues — first diff only, plus the prefix edge case — is where most solutions break.
+
+---
+
+## 4. Longest Consecutive Sequence
+
+> Given an unsorted array, return the length of the longest run of consecutive integers, in O(n).
+
+It reads like an array problem but it's about connected runs. Put everything in a **HashSet**, then only start counting from a number that has **no predecessor** (`num − 1` absent) — that's a run's beginning. Walk upward from there. The "only start at a beginning" rule caps total work at O(n).
+
+```java
+public int longestConsecutive(int[] nums) {
+    Set<Integer> set = new HashSet<>();
+    for (int n : nums) set.add(n);
+
+    int best = 0;
+    for (int n : set) {
+        if (!set.contains(n - 1)) {                  // n starts a run
+            int cur = n, len = 1;
+            while (set.contains(cur + 1)) { cur++; len++; }
+            best = Math.max(best, len);
+        }
+    }
+    return best;
+}
+```
+
+Without the predecessor check you'd re-walk the same run from every element; with it, each number is visited at most twice.
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** Sorting gives O(n log n) trivially — the point is to beat it. The "only extend from a run's start" trick is what buys the linear bound; be ready to justify why it's still O(n) despite the inner `while`.
+
+---
+
+## The pattern, in one line
+
+**Union-Find** answers connectivity and cycle questions in near-constant time (and `n − 1` edges + acyclic proves "tree"). **Topological sort** turns pairwise "a before b" clues into a global order. And some "array" problems are really about **connected runs** in disguise.
+
+Next in **Part 16: Intervals** — sort by an endpoint, then sweep.
