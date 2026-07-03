@@ -1,0 +1,136 @@
+---
+title: "NeetCode 150 in Java — Part 15: Greedy"
+date: "2026-08-03"
+excerpt: "Jump Game II, Gas Station, Hand of Straights, and Merge Triplets to Form Target. When a single local rule — extend the reach, restart the tank, build from the smallest — provably beats a full DP."
+tags: ["dsa", "java", "greedy", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 15
+---
+
+# Greedy
+
+**Part 15.** Greedy trades a DP table for a single local rule you can *prove* is safe. The art is spotting when the locally-best choice is also globally optimal — and being ready to justify why.
+
+---
+
+## 1. Jump Game II
+
+> Each value is a max jump length. Return the **fewest** jumps to reach the last index.
+
+A greedy BFS by "levels": within the range reachable by the current number of jumps, track the **farthest** you could reach next. When you step past the current level's boundary, you've spent one more jump and the boundary jumps to that farthest.
+
+```java
+public int jump(int[] nums) {
+    int jumps = 0, curEnd = 0, farthest = 0;
+    for (int i = 0; i < nums.length - 1; i++) {
+        farthest = Math.max(farthest, i + nums[i]);   // best reach from within this level
+        if (i == curEnd) {                            // exhausted the current jump's range
+            jumps++;
+            curEnd = farthest;                        // next level reaches to farthest
+        }
+    }
+    return jumps;
+}
+```
+
+Each "level" is one jump's worth of reach; incrementing when you hit `curEnd` counts the minimum jumps, no DP table required.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** This is implicit BFS: each jump is a level, `farthest` is the next frontier. Stopping at `n − 1` avoids an extra phantom jump when you land exactly on the end.
+
+---
+
+## 2. Gas Station
+
+> Around a circular route, `gas[i]` fuels you and `cost[i]` is the cost to the next station. Return the start index to complete the loop, or `−1`.
+
+Two greedy facts: if total gas `<` total cost, it's impossible. Otherwise, a unique answer exists — and if the running tank ever goes negative at station `i`, **no start between the old start and `i` works**, so restart from `i + 1`.
+
+```java
+public int canCompleteCircuit(int[] gas, int[] cost) {
+    int total = 0, tank = 0, start = 0;
+    for (int i = 0; i < gas.length; i++) {
+        int diff = gas[i] - cost[i];
+        total += diff;
+        tank += diff;
+        if (tank < 0) {           // can't reach i+1 from current start
+            start = i + 1;        // any earlier start also fails past here → jump ahead
+            tank = 0;
+        }
+    }
+    return total >= 0 ? start : -1;
+}
+```
+
+The leap is realizing that when the tank dies at `i`, every start in the failed stretch also dies there — so you skip them all and restart past `i`.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The correctness proof — "if you can't reach `i` from `start`, no station in `[start, i]` can either" — is the whole point worth stating out loud. Say it; the code is trivial once the claim is granted.
+
+---
+
+## 3. Hand of Straights
+
+> Can the hand be rearranged into groups of `groupSize` consecutive cards?
+
+Greedy from the **smallest** card: it must start a group, so it and the next `groupSize − 1` consecutive values must all be present. Consume them (decrement counts) and repeat. A `TreeMap` keeps the current minimum available in order.
+
+```java
+public boolean isNStraightHand(int[] hand, int groupSize) {
+    if (hand.length % groupSize != 0) return false;
+    TreeMap<Integer, Integer> count = new TreeMap<>();
+    for (int c : hand) count.merge(c, 1, Integer::sum);
+
+    while (!count.isEmpty()) {
+        int start = count.firstKey();             // smallest card must begin a group
+        for (int i = start; i < start + groupSize; i++) {
+            Integer cnt = count.get(i);
+            if (cnt == null) return false;         // missing a consecutive card
+            if (cnt == 1) count.remove(i); else count.put(i, cnt - 1);
+        }
+    }
+    return true;
+}
+```
+
+The smallest remaining card has no choice but to anchor a group — forcing that choice is the greedy commitment that makes the rest deterministic.
+
+- **Time:** O(n log n). **Space:** O(n).
+
+**Prep note.** "The smallest/leftmost element must be handled a fixed way" is a common greedy anchor (also Partition Labels, task scheduling). The `TreeMap` gives you that ordered minimum for free.
+
+---
+
+## 4. Merge Triplets to Form Target Triplet
+
+> Using `max` on chosen triplets element-wise, can you produce the `target` triplet?
+
+Only triplets that never *exceed* the target on any axis are usable (a too-big value can never be un-maxed). Among those, check whether each of the three target values is achievable by *some* usable triplet. If all three positions are covered, the answer is yes.
+
+```java
+public boolean mergeTriplets(int[][] triplets, int[] target) {
+    boolean[] found = new boolean[3];             // can we hit target[0], [1], [2]?
+    for (int[] t : triplets) {
+        if (t[0] > target[0] || t[1] > target[1] || t[2] > target[2]) continue;  // unusable
+        for (int i = 0; i < 3; i++)
+            if (t[i] == target[i]) found[i] = true;
+    }
+    return found[0] && found[1] && found[2];
+}
+```
+
+Discarding any triplet that overshoots on *any* axis is the safe greedy filter; after that, you just need each target coordinate matched once.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The insight is that `max` is monotonic — one over-target value poisons a triplet permanently. Filter first, then check coverage. No search needed.
+
+---
+
+## The pattern, in one line
+
+Greedy replaces DP when a **provably safe local rule** exists: extend the frontier (jump levels), **restart past a failure** (gas), **force the smallest element's hand** (straights), or **filter the impossible then check coverage** (triplets). Always be ready to prove the local choice is globally optimal.
+
+Next in **Part 16: Greedy II, Intervals & Math** — labels, validity, query intervals, and number tricks.

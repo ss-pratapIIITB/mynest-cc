@@ -1,0 +1,148 @@
+---
+title: "NeetCode 150 in Java — Part 16: Partitions, Intervals & Math"
+date: "2026-08-04"
+excerpt: "Partition Labels, Valid Parenthesis String, Minimum Interval to Include Each Query, and Happy Number. Greedy last-occurrence partitioning, a two-bound validity sweep, offline queries with a heap, and cycle detection on digit sums."
+tags: ["dsa", "java", "greedy", "intervals", "math", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 16
+---
+
+# Partitions, Intervals & Math
+
+**Part 16.** A greedy partition, a validity sweep, an **offline** interval-query technique (sort queries, feed a heap), and a number problem that's secretly cycle detection.
+
+---
+
+## 1. Partition Labels
+
+> Partition a string so each letter appears in at most one part; return the part sizes, maximizing the number of parts.
+
+Greedy on **last occurrence**. Precompute where each letter last appears. Sweep, extending the current partition's end to the farthest last-occurrence of any letter seen; when the index reaches that end, the partition closes.
+
+```java
+public List<Integer> partitionLabels(String s) {
+    int[] last = new int[26];
+    for (int i = 0; i < s.length(); i++) last[s.charAt(i) - 'a'] = i;   // last index of each letter
+
+    List<Integer> res = new ArrayList<>();
+    int start = 0, end = 0;
+    for (int i = 0; i < s.length(); i++) {
+        end = Math.max(end, last[s.charAt(i) - 'a']);   // must extend to include this letter fully
+        if (i == end) {                                  // every letter so far ends by here
+            res.add(end - start + 1);
+            start = i + 1;
+        }
+    }
+    return res;
+}
+```
+
+Closing the partition exactly when `i` catches up to the farthest required end is what guarantees each letter is contained in one part.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** This is the interval-merge idea in disguise: each letter defines the interval `[first, last]`, and you're merging overlapping ones. The last-occurrence array is the trick.
+
+---
+
+## 2. Valid Parenthesis String
+
+> Validate a string of `(`, `)`, and `*`, where `*` is `(`, `)`, or empty.
+
+Track a **range** of possible open-paren counts, `[low, high]`. A `(` bumps both; a `)` drops both; a `*` widens the range (could add, remove, or do nothing). Clamp `low` at 0 (never negative), and if `high` ever goes negative there are too many `)`. Valid iff `low` can reach 0 at the end.
+
+```java
+public boolean checkValidString(String s) {
+    int low = 0, high = 0;      // range of possible unmatched '(' counts
+    for (char c : s.toCharArray()) {
+        if (c == '(')      { low++; high++; }
+        else if (c == ')') { low--; high--; }
+        else               { low--; high++; }   // '*': one of ( , ) , empty
+        if (high < 0) return false;              // too many ')' even treating all '*' as '('
+        if (low < 0) low = 0;                    // can't have negative open count
+    }
+    return low == 0;                             // some assignment balances out
+}
+```
+
+Carrying an interval of possible open-counts, instead of a single number, lets one pass account for every interpretation of every `*`.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The two-bound trick (`low`/`high`) elegantly replaces the two-stack or DP approaches. Clamping `low` at 0 encodes "we'd never choose an interpretation that makes it invalid early."
+
+---
+
+## 3. Minimum Interval to Include Each Query
+
+> For each query point, return the size of the **smallest** interval covering it (or `−1`).
+
+Process queries **offline** — sorted. Sort intervals by start too. As you sweep queries in increasing order, push every interval that has started into a **min-heap keyed by size**, then discard heap-top intervals that have already ended. The heap's top is the smallest still-covering interval.
+
+```java
+public int[] minInterval(int[][] intervals, int[] queries) {
+    Arrays.sort(intervals, (a, b) -> a[0] - b[0]);
+    Integer[] order = new Integer[queries.length];
+    for (int i = 0; i < queries.length; i++) order[i] = i;
+    Arrays.sort(order, (a, b) -> queries[a] - queries[b]);   // process queries ascending
+
+    PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> a[0] - b[0]);  // [size, end]
+    int[] res = new int[queries.length];
+    int i = 0;
+    for (int qi : order) {
+        int q = queries[qi];
+        while (i < intervals.length && intervals[i][0] <= q) {         // add intervals started by q
+            heap.offer(new int[]{intervals[i][1] - intervals[i][0] + 1, intervals[i][1]});
+            i++;
+        }
+        while (!heap.isEmpty() && heap.peek()[1] < q) heap.poll();     // drop intervals ended before q
+        res[qi] = heap.isEmpty() ? -1 : heap.peek()[0];
+    }
+    return res;
+}
+```
+
+Sorting the queries lets a single forward sweep of intervals feed the heap; each interval is added once and removed once.
+
+- **Time:** O(n log n + q log q). **Space:** O(n).
+
+**Prep note.** "Answer queries offline, sorted" plus "a heap of currently-relevant items" is a powerful combo for interval/range queries. Remembering the original indices (`order`) is what lets you unsort the answers.
+
+---
+
+## 4. Happy Number
+
+> Repeatedly replace `n` by the sum of squares of its digits. Is it "happy" (reaches 1)?
+
+The process either reaches 1 or **cycles forever** — which is exactly Floyd's cycle detection. Run a slow and fast pointer through the digit-square-sum function; if they meet at 1, it's happy; if they meet elsewhere, there's a loop.
+
+```java
+public boolean isHappy(int n) {
+    int slow = n, fast = next(n);
+    while (fast != 1 && slow != fast) {
+        slow = next(slow);            // 1 step
+        fast = next(next(fast));      // 2 steps
+    }
+    return fast == 1;
+}
+
+private int next(int n) {
+    int sum = 0;
+    while (n > 0) { int d = n % 10; sum += d * d; n /= 10; }
+    return sum;
+}
+```
+
+Treating the number sequence as a linked list and applying fast/slow detects the non-happy cycle in O(1) space — no `HashSet` of seen values needed.
+
+- **Time:** O(log n) per step, bounded steps. **Space:** O(1).
+
+**Prep note.** The reframe — "the sequence either hits 1 or loops" ⇒ cycle detection — is the elegant path. A `HashSet` of seen numbers also works and is easier to reach for; mention both.
+
+---
+
+## The pattern, in one line
+
+Greedy **last-occurrence** partitions strings; a **two-bound range** validates flexible wildcards in one pass; **offline sorted queries + a heap** answer interval-coverage questions; and a number process that "reaches a value or loops" is **Floyd's cycle detection** in disguise.
+
+Next in **Part 17: Math & Geometry** — grid rotations of a different kind, fast exponentiation, and big-number arithmetic.

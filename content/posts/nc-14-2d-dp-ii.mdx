@@ -1,0 +1,153 @@
+---
+title: "NeetCode 150 in Java — Part 14: 2-D Dynamic Programming II"
+date: "2026-08-02"
+excerpt: "Distinct Subsequences, Edit Distance, Burst Balloons, and Regular Expression Matching. The hardest DP tier — counting subsequences, transforming strings, interval DP on the last choice, and matching with wildcards."
+tags: ["dsa", "java", "dynamic-programming", "interval-dp", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 14
+---
+
+# 2-D Dynamic Programming II
+
+**Part 14.** The hardest DP tier. Two-string tables where the branch is subtle, **interval DP** where you pick the *last* action rather than the first, and wildcard matching. The unifying move is still: define `dp[i][j]`, then enumerate the choices at that cell.
+
+---
+
+## 1. Distinct Subsequences
+
+> Count how many distinct subsequences of `s` equal `t`.
+
+`dp[i][j]` = subsequences of `s[0..i)` equal to `t[0..j)`. You can always **skip** `s`'s current char (`dp[i-1][j]`); if it *matches* `t`'s current char, you may additionally **use** it (`dp[i-1][j-1]`). Sum both options.
+
+```java
+public int numDistinct(String s, String t) {
+    int m = s.length(), n = t.length();
+    long[][] dp = new long[m + 1][n + 1];
+    for (int i = 0; i <= m; i++) dp[i][0] = 1;    // empty t: one subsequence (delete everything)
+    for (int i = 1; i <= m; i++)
+        for (int j = 1; j <= n; j++) {
+            dp[i][j] = dp[i-1][j];                 // skip s[i-1]
+            if (s.charAt(i-1) == t.charAt(j-1))
+                dp[i][j] += dp[i-1][j-1];          // also use s[i-1] to match t[j-1]
+        }
+    return (int) dp[m][n];
+}
+```
+
+The base case `dp[i][0] = 1` encodes "there's exactly one way to form the empty target — pick nothing."
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** The skip-vs-skip+use branch is the counting analogue of LCS's match/no-match. Using `long` guards against overflow, which the problem's counts can hit.
+
+---
+
+## 2. Edit Distance
+
+> Minimum insert/delete/replace operations to turn `word1` into `word2`.
+
+The canonical two-string DP. `dp[i][j]` = edits to convert `word1[0..i)` to `word2[0..j)`. If the chars match, carry the diagonal; else take `1 +` the best of the three operations (replace = diagonal, delete = up, insert = left).
+
+```java
+public int minDistance(String w1, String w2) {
+    int m = w1.length(), n = w2.length();
+    int[][] dp = new int[m + 1][n + 1];
+    for (int i = 0; i <= m; i++) dp[i][0] = i;    // delete all of w1's prefix
+    for (int j = 0; j <= n; j++) dp[0][j] = j;    // insert all of w2's prefix
+    for (int i = 1; i <= m; i++)
+        for (int j = 1; j <= n; j++) {
+            if (w1.charAt(i-1) == w2.charAt(j-1)) dp[i][j] = dp[i-1][j-1];   // free match
+            else dp[i][j] = 1 + Math.min(dp[i-1][j-1],                       // replace
+                                Math.min(dp[i-1][j], dp[i][j-1]));           // delete / insert
+        }
+    return dp[m][n];
+}
+```
+
+Each of the three neighbors maps to one operation — that correspondence (diagonal=replace, up=delete, left=insert) is worth memorizing.
+
+- **Time:** O(m·n). **Space:** O(m·n), reducible to O(n).
+
+**Prep note.** Edit Distance is the archetype whose recurrence powers diff tools and spell-checkers. If you can derive the three-way min from the operation meanings, the whole two-string DP family opens up.
+
+---
+
+## 3. Burst Balloons
+
+> Bursting balloon `i` yields `nums[i-1] * nums[i] * nums[i+1]`; the neighbors then close in. Maximize total coins.
+
+**Interval DP** with a twist: instead of the *first* balloon to burst, fix the **last** balloon in an interval. When `k` bursts last in `(left, right)`, its neighbors are the interval's boundaries — so the recurrence composes cleanly. Pad the array with `1`s.
+
+```java
+public int maxCoins(int[] nums) {
+    int n = nums.length;
+    int[] balloons = new int[n + 2];
+    balloons[0] = balloons[n + 1] = 1;
+    for (int i = 0; i < n; i++) balloons[i + 1] = nums[i];
+
+    int[][] dp = new int[n + 2][n + 2];           // dp[l][r] = best coins bursting all strictly inside (l, r)
+    for (int len = 2; len <= n + 1; len++)
+        for (int l = 0; l + len <= n + 1; l++) {
+            int r = l + len;
+            for (int k = l + 1; k < r; k++)       // k = last balloon to burst in (l, r)
+                dp[l][r] = Math.max(dp[l][r],
+                    dp[l][k] + balloons[l]*balloons[k]*balloons[r] + dp[k][r]);
+        }
+    return dp[0][n + 1];
+}
+```
+
+Choosing `k` as the *last* to pop is the whole insight: only then are its multiplying neighbors guaranteed to be `l` and `r`, making left and right subproblems independent.
+
+- **Time:** O(n³). **Space:** O(n²).
+
+**Prep note.** "Fix the last action, not the first" is the signature of interval DP (also Matrix Chain Multiplication). If picking the first choice tangles the subproblems, try picking the last.
+
+---
+
+## 4. Regular Expression Matching
+
+> Match string `s` against pattern `p` supporting `.` (any char) and `*` (zero+ of the preceding element).
+
+`dp[i][j]` = does `s[0..i)` match `p[0..j)`? A normal char or `.` consumes one from each. A `*` is the hard case: it can mean **zero** of its preceding element (`dp[i][j-2]`) or **one more**, if that element matches `s`'s current char (`dp[i-1][j]`).
+
+```java
+public boolean isMatch(String s, String p) {
+    int m = s.length(), n = p.length();
+    boolean[][] dp = new boolean[m + 1][n + 1];
+    dp[0][0] = true;
+    for (int j = 1; j <= n; j++)                       // patterns like a* matching empty s
+        if (p.charAt(j-1) == '*') dp[0][j] = dp[0][j-2];
+
+    for (int i = 1; i <= m; i++)
+        for (int j = 1; j <= n; j++) {
+            char pc = p.charAt(j-1);
+            if (pc == '*') {
+                dp[i][j] = dp[i][j-2];                 // zero of the preceding element
+                if (matches(s, p, i, j-1))
+                    dp[i][j] = dp[i][j] || dp[i-1][j]; // one more of it
+            } else {
+                dp[i][j] = matches(s, p, i, j) && dp[i-1][j-1];  // single char / '.'
+            }
+        }
+    return dp[m][n];
+}
+
+private boolean matches(String s, String p, int i, int j) {
+    return p.charAt(j-1) == '.' || p.charAt(j-1) == s.charAt(i-1);
+}
+```
+
+The `*` cell is the crux: `dp[i][j-2]` drops the `x*` entirely, while `dp[i-1][j]` reuses `x*` to absorb one more matching character.
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** This is the toughest two-string DP; the `*`-handling (zero vs. one-more) is where it lives or dies. Building the empty-string row (`dp[0][j]`) correctly is half the battle.
+
+---
+
+## The pattern, in one line
+
+Hard DP still yields to **`dp[i][j]` + enumerate the choices at this cell**: skip-vs-use (counting), three-way min (edit distance), **fix the last action** (interval DP), or zero-vs-one-more for `*`. The difficulty is naming the choices, not the recursion.
+
+Next in **Part 15: Greedy** — where a single local rule beats a full DP.

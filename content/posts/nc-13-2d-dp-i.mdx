@@ -1,0 +1,148 @@
+---
+title: "NeetCode 150 in Java — Part 13: 2-D Dynamic Programming I"
+date: "2026-08-01"
+excerpt: "Best Time to Buy/Sell with Cooldown, Target Sum, Interleaving String, and Longest Increasing Path in a Matrix. State machines, subset-sum with signs, two-string grids, and DFS + memo on a grid."
+tags: ["dsa", "java", "dynamic-programming", "memoization", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 13
+---
+
+# 2-D Dynamic Programming I
+
+**Part 13.** DP where the state has two dimensions — a position plus a *mode*, two string indices, or a grid cell. The recurring skill: **name the extra dimension** that makes the recurrence memoryless.
+
+---
+
+## 1. Best Time to Buy/Sell with Cooldown
+
+> Maximize profit with unlimited transactions, but you must **rest one day** after selling.
+
+The extra dimension is your **holding state**: `hold` (own a share), `sold` (just sold — must rest tomorrow), or `rest` (idle, free to buy). Each day transitions between these three; the answer is the best of `sold`/`rest` at the end.
+
+```java
+public int maxProfit(int[] prices) {
+    int hold = Integer.MIN_VALUE, sold = 0, rest = 0;
+    for (int p : prices) {
+        int prevSold = sold;
+        sold = hold + p;                       // sell today (was holding)
+        hold = Math.max(hold, rest - p);       // keep holding, or buy today (from rest)
+        rest = Math.max(rest, prevSold);       // stay idle, or become idle after yesterday's sale
+    }
+    return Math.max(sold, rest);
+}
+```
+
+Modeling the cooldown as a `sold → rest → hold` cycle is what makes the recurrence memoryless — the state *is* the constraint.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** "Add a state dimension for the mode you're in" is the state-machine DP pattern — it also solves buy/sell with a fee and with a transaction cap. Draw the three states and their transitions first.
+
+---
+
+## 2. Target Sum
+
+> Assign `+` or `−` to each number so the expression equals `target`. Count the ways.
+
+Choosing signs to hit `target` is subset-sum in disguise: the positives must sum to `(total + target) / 2`. So count subsets reaching that sum — 0/1 knapsack **counting** ways, iterating downward.
+
+```java
+public int findTargetSumWays(int[] nums, int target) {
+    int total = 0;
+    for (int n : nums) total += n;
+    if (Math.abs(target) > total || (total + target) % 2 != 0) return 0;
+    int subset = (total + target) / 2;         // positives must sum to this
+
+    int[] dp = new int[subset + 1];
+    dp[0] = 1;
+    for (int n : nums)
+        for (int s = subset; s >= n; s--)      // downward → each number once
+            dp[s] += dp[s - n];                // count ways to reach sum s
+    return dp[subset];
+}
+```
+
+Reducing "assign signs" to "choose a positive subset summing to a fixed value" turns an exponential sign search into O(n · subset) DP.
+
+- **Time:** O(n · subset). **Space:** O(subset).
+
+**Prep note.** The algebra `P − N = target`, `P + N = total ⇒ P = (total + target)/2` is the crux. Guard the parity and range, or you'll index a negative/oversized array.
+
+---
+
+## 3. Interleaving String
+
+> Is `s3` formed by interleaving `s1` and `s2` (preserving each one's order)?
+
+Two-string 2D DP. `dp[i][j]` = "can `s1[0..i)` and `s2[0..j)` interleave to form `s3[0..i+j)`?" The current `s3` character must come from either `s1`'s next char (if it matches) or `s2`'s.
+
+```java
+public boolean isInterleave(String s1, String s2, String s3) {
+    int m = s1.length(), n = s2.length();
+    if (m + n != s3.length()) return false;
+    boolean[][] dp = new boolean[m + 1][n + 1];
+    dp[0][0] = true;
+    for (int i = 0; i <= m; i++)
+        for (int j = 0; j <= n; j++) {
+            if (i > 0 && s1.charAt(i-1) == s3.charAt(i+j-1))
+                dp[i][j] |= dp[i-1][j];        // took this char from s1
+            if (j > 0 && s2.charAt(j-1) == s3.charAt(i+j-1))
+                dp[i][j] |= dp[i][j-1];        // took this char from s2
+        }
+    return dp[m][n];
+}
+```
+
+The position in `s3` is always `i + j`, so it's implied by the two indices — no third dimension needed.
+
+- **Time:** O(m·n). **Space:** O(m·n), reducible to O(n).
+
+**Prep note.** That `s3` index equals `i + j` is the observation that keeps this 2D instead of 3D. Length mismatch is the trivial early reject.
+
+---
+
+## 4. Longest Increasing Path in a Matrix
+
+> Return the length of the longest strictly increasing path (moving in 4 directions) in a grid.
+
+**DFS + memoization.** From each cell, the longest increasing path is `1 + max(path from each larger neighbor)`. Cache each cell's result — the paths form a DAG (strictly increasing forbids cycles), so memoization makes it linear in cells.
+
+```java
+private int[][] memo;
+
+public int longestIncreasingPath(int[][] matrix) {
+    int m = matrix.length, n = matrix[0].length;
+    memo = new int[m][n];
+    int best = 0;
+    for (int r = 0; r < m; r++)
+        for (int c = 0; c < n; c++)
+            best = Math.max(best, dfs(matrix, r, c));
+    return best;
+}
+
+private int dfs(int[][] mat, int r, int c) {
+    if (memo[r][c] != 0) return memo[r][c];       // already computed
+    int best = 1;
+    int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};
+    for (int[] d : dirs) {
+        int nr = r + d[0], nc = c + d[1];
+        if (nr >= 0 && nr < mat.length && nc >= 0 && nc < mat[0].length && mat[nr][nc] > mat[r][c])
+            best = Math.max(best, 1 + dfs(mat, nr, nc));   // extend into a larger neighbor
+    }
+    return memo[r][c] = best;
+}
+```
+
+Strict increase guarantees no cycles, so each cell's answer is computed once and cached — no visited-set needed.
+
+- **Time:** O(m·n). **Space:** O(m·n).
+
+**Prep note.** "DFS + memo on a grid" is DP on an implicit DAG. The strictly-increasing constraint is what makes it acyclic and the memo sound — call that out.
+
+---
+
+## The pattern, in one line
+
+2D DP is about **the second dimension**: a **mode** (holding state), a derived **subset sum**, a **second string index** (with the third position implied), or a **grid cell** memoized over an implicit DAG. Name that dimension and the recurrence writes itself.
+
+Next in **Part 14: 2-D DP II** — the hardest string and interval DPs.
