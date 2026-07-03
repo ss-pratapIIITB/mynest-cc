@@ -1,0 +1,147 @@
+---
+title: "Blind 75 in Java — Part 9: Linked List II & Heap"
+date: "2026-07-09"
+excerpt: "Reorder List, Merge K Sorted Lists, Top K Frequent Elements, and Find Median from Data Stream. Composing list primitives, and the priority-queue trio: k-way merge, top-K, and the two-heap median."
+tags: ["dsa", "java", "linked-list", "heap", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 9
+---
+
+# Linked List II & Heap
+
+**Part 9.** First, a list problem that **composes** three primitives from Part 8. Then the heap: whenever you hear *"K-th," "top K," "merge K,"* or *"running median,"* reach for a `PriorityQueue` — a min-heap by default in Java.
+
+---
+
+## 1. Reorder List
+
+> Given `L0→L1→…→Ln`, reorder to `L0→Ln→L1→Ln-1→…` in place.
+
+No cleverness needed — **compose** three things you already know: find the middle (fast/slow), reverse the second half, then merge the two halves alternately.
+
+```java
+public void reorderList(ListNode head) {
+    if (head == null || head.next == null) return;
+
+    ListNode slow = head, fast = head;                 // 1. find middle
+    while (fast.next != null && fast.next.next != null) { slow = slow.next; fast = fast.next.next; }
+
+    ListNode second = slow.next;                       // 2. reverse second half
+    slow.next = null;
+    ListNode prev = null;
+    while (second != null) { ListNode n = second.next; second.next = prev; prev = second; second = n; }
+
+    ListNode first = head;                             // 3. merge alternately
+    while (prev != null) {
+        ListNode f = first.next, s = prev.next;
+        first.next = prev; prev.next = f;
+        first = f; prev = s;
+    }
+}
+```
+
+Each phase is a primitive from Part 8; the skill is recognizing the decomposition.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Cutting the list at `slow.next = null` before reversing is essential — otherwise the two halves stay tangled and the merge loops forever.
+
+---
+
+## 2. Merge K Sorted Lists
+
+> Merge `k` sorted lists into one sorted list.
+
+Push the head of every list into a **min-heap**. Repeatedly poll the smallest, append it, and push its `next`. The heap always holds at most `k` candidates, so each of the N total nodes costs O(log k).
+
+```java
+public ListNode mergeKLists(ListNode[] lists) {
+    PriorityQueue<ListNode> pq = new PriorityQueue<>((a, b) -> a.val - b.val);
+    for (ListNode node : lists) if (node != null) pq.offer(node);
+
+    ListNode dummy = new ListNode(0), tail = dummy;
+    while (!pq.isEmpty()) {
+        ListNode cur = pq.poll();
+        tail.next = cur; tail = cur;
+        if (cur.next != null) pq.offer(cur.next);
+    }
+    return dummy.next;
+}
+```
+
+Same dummy-head merge as Part 8, but the heap picks the global minimum across k fronts instead of just two.
+
+- **Time:** O(N log k). **Space:** O(k).
+
+**Prep note.** The alternative — pairwise merge lists two at a time — is also O(N log k) and needs no heap. Know both; the heap version generalizes to any k-way-merge (e.g. Smallest Range).
+
+---
+
+## 3. Top K Frequent Elements
+
+> Return the `k` most frequent elements.
+
+Count frequencies, then select the top k. A **min-heap of size k** keyed on frequency does it in O(n log k): push each element, and whenever the heap exceeds k, drop its smallest-frequency root. What survives is the top k.
+
+```java
+public int[] topKFrequent(int[] nums, int k) {
+    Map<Integer, Integer> freq = new HashMap<>();
+    for (int n : nums) freq.merge(n, 1, Integer::sum);
+
+    PriorityQueue<Integer> heap = new PriorityQueue<>((a, b) -> freq.get(a) - freq.get(b)); // min by freq
+    for (int key : freq.keySet()) {
+        heap.offer(key);
+        if (heap.size() > k) heap.poll();   // evict least frequent
+    }
+
+    int[] res = new int[k];
+    for (int i = k - 1; i >= 0; i--) res[i] = heap.poll();
+    return res;
+}
+```
+
+`freq.merge(n, 1, Integer::sum)` is the idiomatic one-line frequency counter.
+
+- **Time:** O(n log k). **Space:** O(n).
+
+**Prep note.** True O(n) is possible with **bucket sort** — index buckets by frequency (0..n) and read from the high end. Offer that if pushed past the heap's `log k`.
+
+---
+
+## 4. Find Median from Data Stream
+
+> Support `addNum(int)` and `findMedian()` on a growing stream.
+
+Keep the lower half in a **max-heap** and the upper half in a **min-heap**, balanced in size. The two heap tops straddle the middle, so the median is one top (odd count) or the average of both (even). Every insert rebalances in O(log n).
+
+```java
+class MedianFinder {
+    PriorityQueue<Integer> lo = new PriorityQueue<>(Collections.reverseOrder()); // max-heap: lower half
+    PriorityQueue<Integer> hi = new PriorityQueue<>();                           // min-heap: upper half
+
+    public void addNum(int num) {
+        lo.offer(num);
+        hi.offer(lo.poll());                       // pass the largest of lo up to hi (keeps values ordered)
+        if (hi.size() > lo.size()) lo.offer(hi.poll()); // rebalance so lo >= hi in size
+    }
+
+    public double findMedian() {
+        if (lo.size() > hi.size()) return lo.peek();
+        return (lo.peek() + hi.peek()) / 2.0;
+    }
+}
+```
+
+Routing every new value through `lo` then handing its max to `hi` guarantees the two halves stay correctly partitioned without sorting.
+
+- **Time:** O(log n) per add, O(1) per median. **Space:** O(n).
+
+**Prep note.** If the numbers are bounded (say ages 0–120), a counting/Fenwick approach beats the heaps. Ask about the value range — it can unlock a cheaper structure.
+
+---
+
+## The pattern, in one line
+
+Complex list problems often **compose** simple primitives — decompose before you code. And a heap is the answer to *"K-th / top-K / merge-K / running median"*: size-k min-heap for selection, two balanced heaps for a streaming median.
+
+Next in **Part 10: Trees I** — the recursion shape that solves half of all tree problems.

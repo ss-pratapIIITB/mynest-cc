@@ -1,0 +1,142 @@
+---
+title: "Blind 75 in Java — Part 11: Trees II (BFS & BST)"
+date: "2026-07-11"
+excerpt: "Binary Tree Level Order Traversal, Validate BST, Kth Smallest in a BST, and Lowest Common Ancestor of a BST. Level-order with a queue, and the BST invariant that makes in-order traversal come out sorted."
+tags: ["dsa", "java", "trees", "bst", "bfs", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 11
+---
+
+# Trees II
+
+**Part 11.** Two new tools. **BFS with a queue** processes a tree level by level. And the **binary-search-tree invariant** — left subtree smaller, right larger — means an **in-order traversal visits values in sorted order**, which quietly solves three of these four.
+
+Node definition, as in Part 10:
+
+```java
+class TreeNode { int val; TreeNode left, right; TreeNode(int v) { val = v; } }
+```
+
+---
+
+## 1. Binary Tree Level Order Traversal
+
+> Return values level by level, top to bottom, as a list of lists.
+
+**BFS.** Seed a queue with the root; each round, process exactly `queue.size()` nodes — that count is the current level's width — collecting their values and enqueuing their children. Snapshotting the size before the loop is what cleanly separates levels.
+
+```java
+public List<List<Integer>> levelOrder(TreeNode root) {
+    List<List<Integer>> res = new ArrayList<>();
+    if (root == null) return res;
+    Queue<TreeNode> q = new LinkedList<>();
+    q.offer(root);
+    while (!q.isEmpty()) {
+        int size = q.size();                 // nodes on the current level
+        List<Integer> level = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            TreeNode node = q.poll();
+            level.add(node.val);
+            if (node.left != null) q.offer(node.left);
+            if (node.right != null) q.offer(node.right);
+        }
+        res.add(level);
+    }
+    return res;
+}
+```
+
+Fixing `size` up front means children enqueued this round are counted in the *next* level, not this one.
+
+- **Time:** O(n). **Space:** O(n) for the queue.
+
+**Prep note.** This queue-with-level-size skeleton is the template for Right Side View (take the last node each level), zigzag order (alternate insert direction), and shortest-path BFS on grids.
+
+---
+
+## 2. Validate Binary Search Tree
+
+> Return whether the tree is a valid BST (every left descendant smaller, every right descendant larger).
+
+The classic trap is checking only `node.left < node < node.right` locally — that misses violations deeper down. Instead, pass down a **valid (low, high) range** that tightens as you descend: going left caps the max, going right raises the min.
+
+```java
+public boolean isValidBST(TreeNode root) {
+    return valid(root, Long.MIN_VALUE, Long.MAX_VALUE);
+}
+
+private boolean valid(TreeNode node, long low, long high) {
+    if (node == null) return true;
+    if (node.val <= low || node.val >= high) return false;   // out of the allowed range
+    return valid(node.left, low, node.val)      // left subtree must stay below node.val
+        && valid(node.right, node.val, high);   // right subtree must stay above node.val
+}
+```
+
+Using `long` bounds sidesteps the edge case where a node holds `Integer.MIN_VALUE` or `MAX_VALUE`.
+
+- **Time:** O(n). **Space:** O(h).
+
+**Prep note.** The alternative — do an in-order traversal and check it's strictly increasing — is equally valid and leans on the BST/in-order property that the next two problems exploit directly.
+
+---
+
+## 3. Kth Smallest Element in a BST
+
+> Return the k-th smallest value.
+
+**In-order traversal of a BST yields sorted order**, so the k-th node visited in-order is the answer. Walk left, count, and stop the moment you hit the k-th — no need to traverse the rest.
+
+```java
+public int kthSmallest(TreeNode root, int k) {
+    Deque<TreeNode> stack = new ArrayDeque<>();
+    TreeNode cur = root;
+    while (cur != null || !stack.isEmpty()) {
+        while (cur != null) { stack.push(cur); cur = cur.left; }  // go as far left as possible
+        cur = stack.pop();
+        if (--k == 0) return cur.val;                            // k-th smallest reached
+        cur = cur.right;                                         // then explore the right subtree
+    }
+    return -1;
+}
+```
+
+The iterative in-order with an explicit stack lets you *stop early* at the k-th element instead of collecting all n.
+
+- **Time:** O(h + k). **Space:** O(h).
+
+**Prep note.** If the tree is modified often and you query k-th a lot, augment each node with its subtree size — then k-th smallest is O(h) without any traversal. A very common follow-up.
+
+---
+
+## 4. Lowest Common Ancestor of a BST
+
+> Return the lowest node that is an ancestor of both `p` and `q`.
+
+The BST ordering makes this almost trivial: if both values are **less** than the current node, the LCA is in the left subtree; if both are **greater**, it's in the right; otherwise the paths split here — so the current node *is* the LCA.
+
+```java
+public TreeNode lowestCommonAncestor(TreeNode root, TreeNode p, TreeNode q) {
+    TreeNode cur = root;
+    while (cur != null) {
+        if (p.val < cur.val && q.val < cur.val) cur = cur.left;        // both smaller → go left
+        else if (p.val > cur.val && q.val > cur.val) cur = cur.right;  // both larger → go right
+        else return cur;                                               // split point → LCA
+    }
+    return null;
+}
+```
+
+No recursion or parent pointers needed — the ordering tells you which way to walk, and the first split is the answer.
+
+- **Time:** O(h). **Space:** O(1).
+
+**Prep note.** For a *general* binary tree (no BST order), LCA is a different, recursive problem: return non-null when a subtree contains p or q; the node where both sides come back non-null is the LCA. Don't confuse the two.
+
+---
+
+## The pattern, in one line
+
+**BFS with a queue** handles anything level-based; a **descending (low, high) range** validates a BST globally; and the fact that **in-order traversal of a BST is sorted** turns "k-th smallest," "validate," and even LCA into short, ordered walks.
+
+Next in **Part 12: Trees III & Trie** — global path sums, serialization, reconstruction, and prefix trees.

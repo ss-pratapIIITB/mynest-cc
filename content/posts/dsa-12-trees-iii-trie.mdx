@@ -1,0 +1,184 @@
+---
+title: "Blind 75 in Java — Part 12: Trees III & Trie"
+date: "2026-07-12"
+excerpt: "Binary Tree Maximum Path Sum, Serialize and Deserialize Binary Tree, Construct Tree from Preorder & Inorder, and Implement Trie. Returning one value while updating a global, encoding structure, and the prefix tree."
+tags: ["dsa", "java", "trees", "trie", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 12
+---
+
+# Trees III & Trie
+
+**Part 12.** The harder tree patterns: a recursion that **returns one thing while updating a global**, encoding a tree to a string and back, and rebuilding a tree from its traversals. Then the **Trie** — the prefix tree that Part 13 builds on.
+
+Node definition, as before:
+
+```java
+class TreeNode { int val; TreeNode left, right; TreeNode(int v) { val = v; } }
+```
+
+---
+
+## 1. Binary Tree Maximum Path Sum
+
+> Find the maximum sum of any path (any node to any node, following edges).
+
+The trick is that a node plays **two roles**. As a *turning point*, a path can pass through it using both children — that's a candidate for the global answer. But the value it can *contribute upward* to its parent may only use **one** child (a path can't fork). So the recursion returns the best one-sided gain while a global tracks the best two-sided total.
+
+```java
+private int best;
+
+public int maxPathSum(TreeNode root) {
+    best = Integer.MIN_VALUE;
+    gain(root);
+    return best;
+}
+
+private int gain(TreeNode node) {
+    if (node == null) return 0;
+    int left = Math.max(gain(node.left), 0);    // drop negative subtrees
+    int right = Math.max(gain(node.right), 0);
+    best = Math.max(best, node.val + left + right);  // path turning at this node (uses both sides)
+    return node.val + Math.max(left, right);         // contribute upward with one side only
+}
+```
+
+Clamping negative gains to 0 encodes "don't extend into a subtree that would only hurt." The return value uses one side; the global update uses both — that split is the whole problem.
+
+- **Time:** O(n). **Space:** O(h).
+
+**Prep note.** "Return one thing, update a global with another" is a recurring advanced-tree shape (also Diameter of Binary Tree — return depth, update the widest span). Recognizing when the returned value differs from the measured value is the skill.
+
+---
+
+## 2. Serialize and Deserialize Binary Tree
+
+> Encode a tree to a string and decode it back to the identical tree.
+
+A **pre-order traversal with explicit null markers** captures structure unambiguously. Serialize root, left, right, writing `#` for nulls. Deserialize by consuming tokens in the same order — the nulls tell you exactly where subtrees end.
+
+```java
+public String serialize(TreeNode root) {
+    StringBuilder sb = new StringBuilder();
+    build(root, sb);
+    return sb.toString();
+}
+private void build(TreeNode node, StringBuilder sb) {
+    if (node == null) { sb.append("#,"); return; }
+    sb.append(node.val).append(',');
+    build(node.left, sb);
+    build(node.right, sb);
+}
+
+public TreeNode deserialize(String data) {
+    Queue<String> tokens = new LinkedList<>(Arrays.asList(data.split(",")));
+    return parse(tokens);
+}
+private TreeNode parse(Queue<String> tokens) {
+    String t = tokens.poll();
+    if (t.equals("#")) return null;
+    TreeNode node = new TreeNode(Integer.parseInt(t));
+    node.left = parse(tokens);      // same pre-order consumption
+    node.right = parse(tokens);
+    return node;
+}
+```
+
+Because encode and decode both follow root→left→right, the token stream reconstructs the exact shape — the `#` markers are what make it reversible.
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** Any consistent traversal works as long as nulls are recorded; pre-order is easiest because deserialization mirrors the recursion. Level-order (BFS) serialization is the common alternative.
+
+---
+
+## 3. Construct Tree from Preorder & Inorder
+
+> Rebuild the tree given its pre-order and in-order traversals (unique values).
+
+**Pre-order's first element is always the root.** Find that root in the in-order array: everything left of it is the left subtree, everything right is the right subtree. Recurse, walking a pointer through pre-order. A hash map from value→in-order index makes each root lookup O(1).
+
+```java
+private int preIdx;
+private Map<Integer, Integer> inPos;
+
+public TreeNode buildTree(int[] preorder, int[] inorder) {
+    preIdx = 0;
+    inPos = new HashMap<>();
+    for (int i = 0; i < inorder.length; i++) inPos.put(inorder[i], i);
+    return build(preorder, 0, inorder.length - 1);
+}
+
+private TreeNode build(int[] preorder, int inLeft, int inRight) {
+    if (inLeft > inRight) return null;
+    int rootVal = preorder[preIdx++];              // next pre-order value is the subtree's root
+    TreeNode root = new TreeNode(rootVal);
+    int mid = inPos.get(rootVal);                  // its position splits in-order into L | R
+    root.left = build(preorder, inLeft, mid - 1);
+    root.right = build(preorder, mid + 1, inRight);
+    return root;
+}
+```
+
+Building the left subtree *before* the right matters: it consumes pre-order indices in the exact order roots appear.
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** Post-order + in-order works too, but you consume post-order from the *back* and build the right subtree first. Pre/in and post/in are reconstructable; pre/post alone is not (it can't disambiguate).
+
+---
+
+## 4. Implement Trie (Prefix Tree)
+
+> Support `insert`, `search` (full word), and `startsWith` (prefix).
+
+A Trie stores words as paths of characters. Each node has up to 26 children (for lowercase) and an `isEnd` flag marking a complete word. All three operations just walk the path in O(word length).
+
+```java
+class Trie {
+    private final Trie[] children = new Trie[26];
+    private boolean isEnd = false;
+
+    public void insert(String word) {
+        Trie node = this;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new Trie();
+            node = node.children[i];
+        }
+        node.isEnd = true;
+    }
+
+    public boolean search(String word) {
+        Trie node = walk(word);
+        return node != null && node.isEnd;      // must land on a marked word-end
+    }
+
+    public boolean startsWith(String prefix) {
+        return walk(prefix) != null;            // path existing is enough
+    }
+
+    private Trie walk(String s) {
+        Trie node = this;
+        for (char c : s.toCharArray()) {
+            node = node.children[c - 'a'];
+            if (node == null) return null;
+        }
+        return node;
+    }
+}
+```
+
+`search` and `startsWith` differ only in whether the landing node must have `isEnd` set — the walk is identical.
+
+- **Time:** O(L) per operation. **Space:** O(total characters inserted).
+
+**Prep note.** The array-of-26 is faster than a `HashMap<Character, Trie>` for a fixed lowercase alphabet. This Trie is the backbone of Word Search II and wildcard search in Part 13.
+
+---
+
+## The pattern, in one line
+
+Advanced trees hinge on a few moves: **return one value while a global tracks another** (path sum, diameter), **pre-order + null markers** to serialize reversibly, and **root-splits-in-order** to reconstruct. The **Trie** turns prefix questions into O(length) path walks.
+
+Next in **Part 13: Trie & Backtracking** — wildcard search, Word Search II, and Combination Sum.
