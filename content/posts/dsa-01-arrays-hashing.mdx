@@ -1,0 +1,147 @@
+---
+title: "Blind 75 in Java — Part 1: Arrays & Hashing"
+date: "2026-07-01"
+excerpt: "The first four problems every prep list opens with — Contains Duplicate, Valid Anagram, Two Sum, and Group Anagrams. The real lesson isn't the answers, it's learning to reach for a hash map the moment you see 'have I seen this before?'"
+tags: ["dsa", "java", "arrays", "hashing", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 1
+---
+
+# Arrays & Hashing
+
+This is **Part 1** of a pattern-by-pattern walk through the Blind 75 / NeetCode list, written in Java. Each part takes four problems that share a single idea, solves them properly, and — more importantly — names the *trigger* that should make you reach for that idea under time pressure.
+
+The trigger for this part: **"Have I seen this value before?"** or **"How many times does this appear?"** The moment a question sounds like that, your hand should already be moving toward a `HashSet` or `HashMap`. A hash structure buys you O(1) average lookup, which is what turns an O(n²) brute force into an O(n) pass.
+
+---
+
+## 1. Contains Duplicate
+
+> Given an integer array `nums`, return `true` if any value appears at least twice, and `false` if every element is distinct.
+
+The naive answer compares every pair — O(n²). The insight is that you don't need to compare against *everything*, only against **what you've already seen**. A set remembers that for you.
+
+```java
+public boolean containsDuplicate(int[] nums) {
+    Set<Integer> seen = new HashSet<>();
+    for (int n : nums) {
+        if (!seen.add(n)) {   // add() returns false if n was already present
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+`HashSet.add` returns `false` when the element is already there, so the check and the insert happen in one call. First duplicate found, we bail — no need to scan the rest.
+
+- **Time:** O(n) — one pass, O(1) average per `add`.
+- **Space:** O(n) — worst case every element is unique and lands in the set.
+
+**Prep note.** If the interviewer says "do it with O(1) extra space," the answer is: sort first (O(n log n) time, O(1) extra if you may mutate the input) and scan for adjacent equals. Knowing the time/space trade between "hash for speed" and "sort for space" is the point of this problem.
+
+---
+
+## 2. Valid Anagram
+
+> Given two strings `s` and `t`, return `true` if `t` is an anagram of `s` — same characters, same counts, any order.
+
+"Same counts" is the tell. Count the characters in `s`, then spend those counts down as you walk `t`. If anything goes negative or the lengths differ, it's not an anagram.
+
+```java
+public boolean isAnagram(String s, String t) {
+    if (s.length() != t.length()) return false;
+
+    int[] count = new int[26];          // assumes lowercase a–z
+    for (int i = 0; i < s.length(); i++) {
+        count[s.charAt(i) - 'a']++;
+        count[t.charAt(i) - 'a']--;
+    }
+    for (int c : count) {
+        if (c != 0) return false;
+    }
+    return true;
+}
+```
+
+Using a fixed `int[26]` instead of a `HashMap` is a small flex that signals you're thinking about constant factors. `s.charAt(i) - 'a'` maps `'a'..'z'` onto `0..25`.
+
+- **Time:** O(n).
+- **Space:** O(1) — the array is fixed at 26 regardless of input size.
+
+**Prep note.** The natural follow-up is *"what if the string is full Unicode?"* Then drop the `int[26]` and use a `HashMap<Character, Integer>` (or `Map<Integer, Integer>` keyed on code points). Say that out loud before they ask — it shows you know the `int[26]` was an assumption, not a reflex.
+
+---
+
+## 3. Two Sum
+
+> Given `nums` and a `target`, return the indices of the two numbers that add up to `target`. Exactly one solution exists; you can't reuse an element.
+
+This is *the* canonical hashing problem. Brute force checks every pair — O(n²). The trick: for each number `x`, the partner you need is `target - x`. Instead of searching the array for that partner, **remember every number you've already passed** in a map from value → index, and check that map in O(1).
+
+```java
+public int[] twoSum(int[] nums, int target) {
+    Map<Integer, Integer> seen = new HashMap<>();   // value -> index
+    for (int i = 0; i < nums.length; i++) {
+        int need = target - nums[i];
+        if (seen.containsKey(need)) {
+            return new int[] { seen.get(need), i };
+        }
+        seen.put(nums[i], i);
+    }
+    return new int[0];   // problem guarantees a solution; this is just to compile
+}
+```
+
+The one detail that trips people up: put `nums[i]` into the map **after** checking for its partner. Do it before, and a `target` of `2 * nums[i]` would match the element against itself.
+
+- **Time:** O(n) — single pass.
+- **Space:** O(n) for the map.
+
+**Prep note.** If the array were *sorted* and they asked for the two *values* (not indices), the better answer is the two-pointer sweep from Part 2 at O(1) extra space. Recognizing when "sorted" unlocks a cheaper tool is exactly the muscle this list builds.
+
+---
+
+## 4. Group Anagrams
+
+> Given an array of strings, group the ones that are anagrams of each other. Return the groups in any order.
+
+Grouping means a `HashMap` from **some key that's identical for anagrams** to the list of strings that share it. Two questions produce two good keys:
+
+1. **Sorted string** — `"eat"`, `"tea"`, `"ate"` all sort to `"aet"`. Simple, O(k log k) per word.
+2. **Character-count signature** — a 26-length count turned into a string. O(k) per word, better when words are long.
+
+```java
+public List<List<String>> groupAnagrams(String[] strs) {
+    Map<String, List<String>> groups = new HashMap<>();
+
+    for (String s : strs) {
+        int[] count = new int[26];
+        for (char c : s.toCharArray()) {
+            count[c - 'a']++;
+        }
+        // Build a stable key from the counts, e.g. "1#0#0#...#2#"
+        StringBuilder key = new StringBuilder();
+        for (int c : count) {
+            key.append(c).append('#');
+        }
+        groups.computeIfAbsent(key.toString(), k -> new ArrayList<>()).add(s);
+    }
+    return new ArrayList<>(groups.values());
+}
+```
+
+`computeIfAbsent` is the idiomatic way to say "get the list for this key, creating an empty one if it's the first time." The `#` separator matters — without it, counts like `[1,12]` and `[11,2]` would both stringify to `"112"` and collide.
+
+- **Time:** O(n · k) where `n` is the number of words and `k` the max word length.
+- **Space:** O(n · k) for the map.
+
+**Prep note.** Whenever you need to bucket items by "sameness," the pattern is always the same: design a **canonical key** that's identical for members of a group, then map key → bucket. You'll reuse this exact move in dozens of problems.
+
+---
+
+## The pattern, in one line
+
+If a question asks *"seen before?"*, *"how many times?"*, or *"group by sameness?"*, a hash structure turns a quadratic scan into a linear one. The whole skill is spotting that phrasing fast and choosing between a `Set` (membership), a `Map` (association), or a fixed `int[]` (small known alphabet).
+
+Next up in **Part 2: Two Pointers** — what to do when the array is *sorted* and a hash map would be overkill.

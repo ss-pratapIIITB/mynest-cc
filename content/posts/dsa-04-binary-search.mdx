@@ -1,0 +1,161 @@
+---
+title: "Blind 75 in Java — Part 4: Binary Search"
+date: "2026-07-04"
+excerpt: "Binary Search, Search a 2D Matrix, Koko Eating Bananas, and Find Minimum in Rotated Sorted Array. Once you can phrase a problem as 'find the boundary in a monotonic space,' you can halve it — even when there's no array to sort."
+tags: ["dsa", "java", "binary-search", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 4
+---
+
+# Binary Search
+
+**Part 4.** Binary search is the pattern for **monotonic** search spaces: any structure where you can look at the midpoint and decide, in O(1), which half to throw away. The obvious case is a sorted array — but the deeper skill is spotting monotonicity where there's no array at all ("binary search on the answer").
+
+The trigger: *"sorted,"* *"O(log n),"* or *"find the smallest/largest value that still works."* That last phrasing is the one people miss — it's a boundary search, and boundary searches are binary searches.
+
+A note on the two off-by-one traps that account for most binary-search bugs: **the loop bound** (`<` vs `<=`) and **the midpoint** (`left + (right - left) / 2` to avoid integer overflow). Pick one template and use it every time.
+
+---
+
+## 1. Binary Search
+
+> Given a sorted array and a `target`, return its index, or `-1` if absent.
+
+The reference template. `while (left <= right)` with an inclusive `right`, and every branch strictly shrinks the range so the loop can't hang.
+
+```java
+public int search(int[] nums, int target) {
+    int left = 0, right = nums.length - 1;
+    while (left <= right) {
+        int mid = left + (right - left) / 2;   // overflow-safe midpoint
+        if (nums[mid] == target) {
+            return mid;
+        } else if (nums[mid] < target) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    return -1;
+}
+```
+
+Two habits to lock in: `left + (right - left) / 2` never overflows the way `(left + right) / 2` can on large indices, and both branches use `mid + 1` / `mid - 1` so the interval always shrinks. Get these right once and every later variant inherits the correctness.
+
+- **Time:** O(log n).
+- **Space:** O(1).
+
+**Prep note.** `Arrays.binarySearch` exists, but interviewers want the hand-rolled version — precisely to see whether you handle the bounds. Write it from muscle memory so you can spend your attention on the harder variants below.
+
+---
+
+## 2. Search a 2D Matrix
+
+> Each row is sorted, and the first entry of each row exceeds the last entry of the previous row. Return whether `target` is present.
+
+Those two properties mean the matrix is really **one sorted list** folded into a grid. So do a single binary search over `0 .. rows*cols - 1` and unflatten the midpoint with `/` and `%`.
+
+```java
+public boolean searchMatrix(int[][] matrix, int target) {
+    int rows = matrix.length, cols = matrix[0].length;
+    int left = 0, right = rows * cols - 1;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        int value = matrix[mid / cols][mid % cols];   // unflatten index -> (row, col)
+        if (value == target) {
+            return true;
+        } else if (value < target) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    return false;
+}
+```
+
+`mid / cols` recovers the row and `mid % cols` the column. Recognizing that the grid *is* a sorted array is the whole insight; the mechanics are identical to problem 1.
+
+- **Time:** O(log(m·n)).
+- **Space:** O(1).
+
+**Prep note.** Watch for the near-identical problem where rows and columns are each sorted but rows *don't* chain (later rows can start below earlier rows' ends). That one is **not** a single sorted list — it's the O(m + n) staircase walk from the top-right corner. Confirm which variant you're given before reaching for this code.
+
+---
+
+## 3. Koko Eating Bananas
+
+> `n` piles, `h` hours. At speed `k`, Koko eats `k` bananas an hour from one pile (a partial pile still burns the whole hour). Find the **smallest** `k` that finishes all piles within `h` hours.
+
+There's no sorted array here — but the *answer* is monotonic: if speed `k` works, every speed above it works too. So binary-search the **speed**, from 1 to `max(pile)`, for the smallest value that fits in `h` hours.
+
+```java
+public int minEatingSpeed(int[] piles, int h) {
+    int left = 1, right = 0;
+    for (int p : piles) right = Math.max(right, p);   // fastest we'd ever need
+
+    while (left < right) {
+        int mid = left + (right - left) / 2;
+        if (hoursNeeded(piles, mid) <= h) {
+            right = mid;          // mid works; maybe something slower also works
+        } else {
+            left = mid + 1;       // too slow
+        }
+    }
+    return left;                  // smallest workable speed
+}
+
+private long hoursNeeded(int[] piles, int speed) {
+    long hours = 0;
+    for (int p : piles) {
+        hours += (p + speed - 1) / speed;   // ceil(p / speed) without floating point
+    }
+    return hours;
+}
+```
+
+Two things to notice. The `while (left < right)` / `right = mid` template converges on the **smallest** value that satisfies the predicate — that's the boundary-search shape, distinct from the `<=` template above. And `(p + speed - 1) / speed` is integer ceiling division, avoiding `Math.ceil` and floating point entirely.
+
+- **Time:** O(n · log(maxPile)).
+- **Space:** O(1).
+
+**Prep note.** "Binary search on the answer" is the highest-leverage idea in this part. The recipe: (1) is there a value `x` where everything ≥ `x` works and everything below fails? (2) can you check a single `x` in decent time? If yes to both, binary-search `x`. Say those two sentences out loud when you spot the shape.
+
+---
+
+## 4. Find Minimum in Rotated Sorted Array
+
+> A sorted array was rotated at an unknown pivot (no duplicates). Find the minimum in O(log n).
+
+The array is in two sorted runs, and the minimum is the single point where it "drops." Compare `nums[mid]` to `nums[right]`: if `nums[mid] > nums[right]`, the drop is to the **right** of `mid`; otherwise it's at `mid` or to its left.
+
+```java
+public int findMin(int[] nums) {
+    int left = 0, right = nums.length - 1;
+    while (left < right) {
+        int mid = left + (right - left) / 2;
+        if (nums[mid] > nums[right]) {
+            left = mid + 1;      // minimum is strictly right of mid
+        } else {
+            right = mid;         // minimum is mid or to its left — keep mid in range
+        }
+    }
+    return nums[left];           // left == right: the minimum
+}
+```
+
+Comparing against `right` (not `left`) is what makes this clean — comparing against `left` needs an extra case for the already-sorted window. Note `right = mid`, **not** `mid - 1`: `mid` might itself be the minimum, so you can't discard it.
+
+- **Time:** O(log n).
+- **Space:** O(1).
+
+**Prep note.** The sibling problem *Search in Rotated Sorted Array* uses the same "which half is sorted?" reasoning to locate a target instead of the minimum. Solve this one cold and that one is a short step away — a common back-to-back pairing.
+
+---
+
+## The pattern, in one line
+
+If you can look at a midpoint and **discard half** in O(1), it's a binary search — whether the space is a sorted array, a folded grid, or the range of possible answers. Keep two templates: `<=` with `mid ± 1` for *exact match*, and `<` with `right = mid` for *smallest value satisfying a predicate*. Know which one you're writing before the first keystroke.
+
+That closes the first four patterns — **Arrays & Hashing, Two Pointers, Sliding Window, and Binary Search**. Next in the series: **Linked Lists**.

@@ -1,0 +1,164 @@
+---
+title: "Blind 75 in Java — Part 3: Sliding Window"
+date: "2026-07-03"
+excerpt: "Best Time to Buy/Sell Stock, Longest Substring Without Repeating Characters, Longest Repeating Character Replacement, and Minimum Window Substring. Two pointers moving the same direction, expanding and shrinking a window over the data."
+tags: ["dsa", "java", "strings", "sliding-window", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 3
+---
+
+# Sliding Window
+
+**Part 3.** Sliding window is two pointers moving in the **same** direction. You maintain a contiguous stretch — a subarray or substring — between `left` and `right`. You **expand** by advancing `right`, and when the window breaks a rule, you **shrink** by advancing `left`. Every index enters and leaves the window at most once, so the whole thing is O(n) even though it looks like a double loop.
+
+The trigger: *"longest/shortest/best contiguous subarray or substring satisfying some condition."* The word **contiguous** is the tell that separates this from the subsequence DP problems later in the list.
+
+---
+
+## 1. Best Time to Buy and Sell Stock
+
+> Given daily prices, pick one day to buy and a later day to sell to maximize profit. Return the max profit, or 0 if none is positive.
+
+The degenerate one-directional window: track the **cheapest price seen so far** (the best buy day) and, at each price, ask "what if I sold today?"
+
+```java
+public int maxProfit(int[] prices) {
+    int minPrice = Integer.MAX_VALUE;
+    int best = 0;
+    for (int price : prices) {
+        if (price < minPrice) {
+            minPrice = price;          // a new, cheaper buy day
+        } else {
+            best = Math.max(best, price - minPrice);
+        }
+    }
+    return best;
+}
+```
+
+`minPrice` is effectively `left` (the buy) and `price` is `right` (the sell). Because you only ever sell *after* buying, one forward pass is enough.
+
+- **Time:** O(n).
+- **Space:** O(1).
+
+**Prep note.** This is the gateway to a whole family ("with a cooldown," "at most k transactions," "with a fee"), most of which become DP. Anchoring on the plain version — *lowest price behind me, best sale today* — gives you the base case for all of them.
+
+---
+
+## 2. Longest Substring Without Repeating Characters
+
+> Return the length of the longest substring of `s` with no repeated character.
+
+Grow the window on the right. The moment a character repeats, shrink from the left until the duplicate is gone. Track window contents in a set (or a last-seen-index map to jump `left` directly).
+
+```java
+public int lengthOfLongestSubstring(String s) {
+    Set<Character> window = new HashSet<>();
+    int left = 0, best = 0;
+
+    for (int right = 0; right < s.length(); right++) {
+        char c = s.charAt(right);
+        while (window.contains(c)) {       // shrink until c is unique again
+            window.remove(s.charAt(left));
+            left++;
+        }
+        window.add(c);
+        best = Math.max(best, right - left + 1);
+    }
+    return best;
+}
+```
+
+`right - left + 1` is the current window length. The inner `while` looks nested but each character is removed at most once across the whole run, so the amortized cost stays linear.
+
+- **Time:** O(n).
+- **Space:** O(min(n, alphabet)) for the set.
+
+**Prep note.** The optimization worth knowing: store `char → last index` in a map and set `left = max(left, lastIndex + 1)` to leap past the duplicate in one step instead of removing one char at a time. Same big-O, fewer operations — a good thing to offer as a refinement.
+
+---
+
+## 3. Longest Repeating Character Replacement
+
+> Given `s` and an integer `k`, you may replace up to `k` characters. Return the length of the longest substring that can become all one character.
+
+A window is **valid** when `(windowLength − countOfMostFrequentChar) <= k` — that leftover is exactly how many replacements you'd need. Expand while valid; when it breaks, slide `left` forward by one to keep the window size monotonic.
+
+```java
+public int characterReplacement(String s, int k) {
+    int[] count = new int[26];
+    int left = 0, maxFreq = 0, best = 0;
+
+    for (int right = 0; right < s.length(); right++) {
+        count[s.charAt(right) - 'a']++;
+        maxFreq = Math.max(maxFreq, count[s.charAt(right) - 'a']);
+
+        // (window size) - (most frequent char) = chars we'd have to replace
+        if ((right - left + 1) - maxFreq > k) {
+            count[s.charAt(left) - 'a']--;
+            left++;
+        }
+        best = Math.max(best, right - left + 1);
+    }
+    return best;
+}
+```
+
+The clever part: `maxFreq` is never decreased, even when characters leave the window. That's safe because `best` only ever grows when we find a *genuinely larger* valid window, and a stale `maxFreq` can only make the window slide, never falsely expand. This keeps the whole thing one pass.
+
+- **Time:** O(n).
+- **Space:** O(1) — fixed `int[26]`.
+
+**Prep note.** If asked "isn't the stale `maxFreq` a bug?", the answer is that the window can only grow or slide by one; it never shrinks below its best, so an over-optimistic `maxFreq` never inflates the recorded answer. Being able to defend that is the point of the problem.
+
+---
+
+## 4. Minimum Window Substring
+
+> Given `s` and `t`, return the shortest substring of `s` that contains every character of `t` (with multiplicity). Return `""` if none exists.
+
+The hardest of the four, and the template for "smallest window covering a requirement." Expand `right` until the window is **complete** (covers all of `t`), then contract `left` as far as possible while staying complete, recording the best. A `have`/`need` counter avoids re-scanning the frequency map each step.
+
+```java
+public String minWindow(String s, String t) {
+    if (s.length() < t.length()) return "";
+
+    int[] need = new int[128];
+    for (char c : t.toCharArray()) need[c]++;
+    int required = t.length();          // total chars still to satisfy (with multiplicity)
+
+    int left = 0, bestLen = Integer.MAX_VALUE, bestStart = 0;
+
+    for (int right = 0; right < s.length(); right++) {
+        if (need[s.charAt(right)]-- > 0) {   // this char was actually needed
+            required--;
+        }
+        while (required == 0) {               // window is complete: try to shrink
+            if (right - left + 1 < bestLen) {
+                bestLen = right - left + 1;
+                bestStart = left;
+            }
+            if (need[s.charAt(left)]++ == 0) { // about to drop a char we need
+                required++;
+            }
+            left++;
+        }
+    }
+    return bestLen == Integer.MAX_VALUE ? "" : s.substring(bestStart, bestStart + bestLen);
+}
+```
+
+`need[c]` goes **negative** for characters you have in surplus, which is exactly why the "about to drop a needed char" test is `== 0` — surplus removals don't re-open the requirement. `required` hitting 0 is the O(1) "window complete" signal that lets both pointers stay in a single pass.
+
+- **Time:** O(|s| + |t|).
+- **Space:** O(1) — fixed 128-entry array (extend to a map for full Unicode).
+
+**Prep note.** This is the reference implementation for every "minimum window covering a multiset" variant. If you can reproduce the `need`/`required` bookkeeping and explain why surplus counts go negative, you've shown you understand the template, not just this instance.
+
+---
+
+## The pattern, in one line
+
+For **longest/shortest contiguous** questions, expand `right` to grow the window and advance `left` to restore whatever invariant broke; because each index enters and exits once, it's O(n). The design work is naming the invariant ("no repeats," "≤ k replacements," "covers `t`") and the O(1) signal that tells you when it holds.
+
+Next up in **Part 4: Binary Search** — from scanning windows to halving the search space.

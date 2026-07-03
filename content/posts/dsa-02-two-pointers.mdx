@@ -1,0 +1,166 @@
+---
+title: "Blind 75 in Java — Part 2: Two Pointers"
+date: "2026-07-02"
+excerpt: "Valid Palindrome, Two Sum II, 3Sum, and Container With Most Water. When the data is sorted or symmetric, two indices walking toward (or with) each other beat a hash map on space and often on clarity."
+tags: ["dsa", "java", "arrays", "two-pointers", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 2
+---
+
+# Two Pointers
+
+**Part 2.** The two-pointer pattern is what you reach for when the array is **sorted**, or when the problem has a natural **symmetry** (front vs. back). Instead of a nested loop, you keep two indices and move them intelligently so the whole thing collapses to a single O(n) sweep with O(1) extra space.
+
+The trigger: *"sorted array,"* *"pair/triple that sums to X,"* or *"compare the ends of something."* Where Part 1 spent memory to save time, two pointers often saves **both**.
+
+---
+
+## 1. Valid Palindrome
+
+> Given a string `s`, return `true` if it reads the same forwards and backwards, considering only alphanumeric characters and ignoring case.
+
+Symmetry problem: one pointer at each end, walk inward, skip anything that isn't alphanumeric, compare lowercased.
+
+```java
+public boolean isPalindrome(String s) {
+    int left = 0, right = s.length() - 1;
+    while (left < right) {
+        while (left < right && !Character.isLetterOrDigit(s.charAt(left))) {
+            left++;
+        }
+        while (left < right && !Character.isLetterOrDigit(s.charAt(right))) {
+            right--;
+        }
+        if (Character.toLowerCase(s.charAt(left)) != Character.toLowerCase(s.charAt(right))) {
+            return false;
+        }
+        left++;
+        right--;
+    }
+    return true;
+}
+```
+
+The inner `while` loops are the whole trick: they skip punctuation and spaces without allocating a cleaned copy of the string, keeping you at O(1) extra space. `Character.isLetterOrDigit` and `Character.toLowerCase` do the classification so you don't hand-roll ASCII ranges.
+
+- **Time:** O(n).
+- **Space:** O(1).
+
+**Prep note.** The lazy alternative — strip non-alphanumerics into a new string, lowercase it, and compare with its reverse — is fine to mention but costs O(n) space. Leading with the in-place version shows you noticed the cheaper path.
+
+---
+
+## 2. Two Sum II — Input Array Is Sorted
+
+> Given a **1-indexed sorted** array, return the indices of the two numbers adding to `target`.
+
+Because it's sorted, you don't need the hash map from Part 1. Start one pointer at each end and read the sum as a dial: too big, pull the right pointer in (shrinks the sum); too small, push the left pointer up (grows it).
+
+```java
+public int[] twoSum(int[] numbers, int target) {
+    int left = 0, right = numbers.length - 1;
+    while (left < right) {
+        int sum = numbers[left] + numbers[right];
+        if (sum == target) {
+            return new int[] { left + 1, right + 1 };   // problem is 1-indexed
+        } else if (sum < target) {
+            left++;
+        } else {
+            right--;
+        }
+    }
+    return new int[0];
+}
+```
+
+Every move provably discards a value that can't be part of the answer, so no pair is ever missed. This is the payoff for "sorted": O(1) space instead of O(n).
+
+- **Time:** O(n).
+- **Space:** O(1).
+
+**Prep note.** This is the exact engine inside 3Sum. Get comfortable with *why* moving a pointer is safe — "the current pair is too small, and `left` is the smallest remaining value, so `left` can never pair with anything smaller than `right`" — because you'll invoke that argument again immediately.
+
+---
+
+## 3. 3Sum
+
+> Given an integer array, return all **unique** triplets `[a, b, c]` with `a + b + c == 0`.
+
+Fix one number, then the problem becomes "find two numbers summing to `-a`" — which is Two Sum II. So: **sort**, loop `i` as the fixed element, and run a two-pointer sweep on the rest. The fiddly part is skipping duplicates so you don't emit the same triplet twice.
+
+```java
+public List<List<Integer>> threeSum(int[] nums) {
+    Arrays.sort(nums);
+    List<List<Integer>> res = new ArrayList<>();
+
+    for (int i = 0; i < nums.length - 2; i++) {
+        if (nums[i] > 0) break;                      // sorted: no way to reach 0 anymore
+        if (i > 0 && nums[i] == nums[i - 1]) continue;  // skip duplicate anchors
+
+        int left = i + 1, right = nums.length - 1;
+        while (left < right) {
+            int sum = nums[i] + nums[left] + nums[right];
+            if (sum < 0) {
+                left++;
+            } else if (sum > 0) {
+                right--;
+            } else {
+                res.add(Arrays.asList(nums[i], nums[left], nums[right]));
+                left++;
+                right--;
+                while (left < right && nums[left] == nums[left - 1]) left++;   // skip dup
+                while (left < right && nums[right] == nums[right + 1]) right--; // skip dup
+            }
+        }
+    }
+    return res;
+}
+```
+
+Three duplicate skips matter: one on the anchor `i`, and one each on `left`/`right` after recording a hit. The `if (nums[i] > 0) break` is a cheap early exit — once your smallest number is positive, three sorted numbers can't sum to zero.
+
+- **Time:** O(n²) — the sort is O(n log n), then an O(n) sweep for each of n anchors.
+- **Space:** O(1) beyond the output (ignoring sort's stack).
+
+**Prep note.** 3Sum is the single most common "did they really understand two pointers" gate. If you can derive it from Two Sum II live and explain the dedup logic, you've shown the pattern is internalized, not memorized.
+
+---
+
+## 4. Container With Most Water
+
+> Given heights `height[i]`, pick two lines that with the x-axis form a container holding the most water. Return that maximum area.
+
+Area is `width × min(height[left], height[right])`. Start as **wide as possible** (both ends) and walk inward. The only way to possibly beat the current area — since width is shrinking every step — is to raise the limiting wall. So always move the **shorter** side inward.
+
+```java
+public int maxArea(int[] height) {
+    int left = 0, right = height.length - 1;
+    int best = 0;
+
+    while (left < right) {
+        int area = (right - left) * Math.min(height[left], height[right]);
+        best = Math.max(best, area);
+        if (height[left] < height[right]) {
+            left++;
+        } else {
+            right--;
+        }
+    }
+    return best;
+}
+```
+
+Moving the *taller* wall can never help: width drops and the height is still capped by the shorter wall you left behind. Moving the shorter wall is the only move with upside. That greedy argument is the entire problem.
+
+- **Time:** O(n).
+- **Space:** O(1).
+
+**Prep note.** Expect the "why is it safe to skip all those pairs?" challenge. Answer with the greedy invariant above — the shorter wall bounds the area, and it can never do *better* paired with anything narrower, so we're free to discard it.
+
+---
+
+## The pattern, in one line
+
+When the input is **sorted** or **symmetric**, two indices moving with intent replace a nested loop and usually a hash map too — O(n) time, O(1) space. The reusable move is the *provably safe discard*: at each step, argue that one endpoint cannot participate in a better answer, then drop it.
+
+Next up in **Part 3: Sliding Window** — two pointers that move in the *same* direction to track a running subarray or substring.
