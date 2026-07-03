@@ -1,0 +1,156 @@
+---
+title: "NeetCode 150 in Java — Part 3: Arrays, Two Pointers & Binary Search"
+date: "2026-07-22"
+excerpt: "Valid Sudoku, Trapping Rain Water, Time Based Key-Value Store, and Median of Two Sorted Arrays. Hashing grid constraints, two-pointer water, binary search over timestamps, and the log-time partition median."
+tags: ["dsa", "java", "arrays", "two-pointers", "binary-search", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 3
+---
+
+# Arrays, Two Pointers & Binary Search
+
+**Part 3.** A hashing-for-constraints warmup, the classic two-pointer water problem, binary search on **timestamps**, and one of the hardest binary searches there is — the median of two sorted arrays in O(log).
+
+---
+
+## 1. Valid Sudoku
+
+> Is a partially filled 9×9 board valid (no dup in any row, column, or 3×3 box)?
+
+Just track what you've seen. Three sets of seen-signatures — one per row, column, and box — and encode each filled cell as three keys. The box index is `(r / 3) * 3 + c / 3`.
+
+```java
+public boolean isValidSudoku(char[][] board) {
+    Set<String> seen = new HashSet<>();
+    for (int r = 0; r < 9; r++)
+        for (int c = 0; c < 9; c++) {
+            char v = board[r][c];
+            if (v == '.') continue;
+            int box = (r / 3) * 3 + c / 3;
+            if (!seen.add(v + "row" + r) || !seen.add(v + "col" + c) || !seen.add(v + "box" + box))
+                return false;                        // add() returns false on a duplicate
+        }
+    return true;
+}
+```
+
+Encoding each cell as three distinctly-namespaced keys lets one set enforce all three constraints at once.
+
+- **Time:** O(1) (fixed 81 cells). **Space:** O(1).
+
+**Prep note.** The `(r/3)*3 + c/3` box-index formula recurs in any 9×9 grid problem — worth memorizing so it's not re-derived under pressure.
+
+---
+
+## 2. Trapping Rain Water
+
+> Given bar heights, compute the water trapped after rain.
+
+Water over any bar is bounded by the **shorter of the tallest walls to its left and right**. Two pointers from both ends, each tracking its side's running max; always advance the side with the *smaller* max, because that side's water is then fully determined.
+
+```java
+public int trap(int[] height) {
+    int l = 0, r = height.length - 1, leftMax = 0, rightMax = 0, water = 0;
+    while (l < r) {
+        if (height[l] < height[r]) {                 // left wall is the binding constraint
+            leftMax = Math.max(leftMax, height[l]);
+            water += leftMax - height[l];
+            l++;
+        } else {
+            rightMax = Math.max(rightMax, height[r]);
+            water += rightMax - height[r];
+            r--;
+        }
+    }
+    return water;
+}
+```
+
+Moving the shorter side is safe because its water depends only on its own max — the taller opposite wall guarantees at least that much containment.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** This is Container With Most Water's harder sibling: both use two pointers moving the shorter side, but here you *accumulate* trapped water rather than track a single max area.
+
+---
+
+## 3. Time Based Key-Value Store
+
+> `set(key, value, timestamp)` and `get(key, timestamp)` returning the value with the largest timestamp `≤` the query.
+
+Timestamps for each key arrive increasing, so store each key's history as a sorted list of `(timestamp, value)`. `get` is a **binary search for the rightmost timestamp not exceeding the query** — a lower-bound variant.
+
+```java
+class TimeMap {
+    private final Map<String, List<int[]>> map = new HashMap<>();   // key -> [(ts, valueId)]
+    private final List<String> values = new ArrayList<>();
+
+    public void set(String key, String value, int timestamp) {
+        values.add(value);
+        map.computeIfAbsent(key, k -> new ArrayList<>()).add(new int[]{timestamp, values.size() - 1});
+    }
+
+    public String get(String key, int timestamp) {
+        List<int[]> list = map.get(key);
+        if (list == null) return "";
+        int lo = 0, hi = list.size() - 1, ans = -1;
+        while (lo <= hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (list.get(mid)[0] <= timestamp) { ans = list.get(mid)[1]; lo = mid + 1; } // candidate, seek later
+            else hi = mid - 1;
+        }
+        return ans == -1 ? "" : values.get(ans);
+    }
+}
+```
+
+Recording a candidate then continuing right (`lo = mid + 1`) is the "largest value that still satisfies the predicate" search shape.
+
+- **Time:** O(log n) per get, O(1) per set. **Space:** O(n).
+
+**Prep note.** "Latest value at or before time T" is a lower-bound binary search — the same template as first/last position. Binary search on a *timeline* is a common systems-flavored variant.
+
+---
+
+## 4. Median of Two Sorted Arrays
+
+> Find the median of two sorted arrays in O(log(m+n)).
+
+Binary-search a **partition** of the smaller array. A cut splits each array into left/right halves such that the combined left half has the right size; you want the largest left elements `≤` the smallest right elements. Adjust the cut until that holds; the median comes from the four boundary values.
+
+```java
+public double findMedianSortedArrays(int[] a, int[] b) {
+    if (a.length > b.length) { int[] t = a; a = b; b = t; }   // binary-search the shorter array
+    int m = a.length, n = b.length, half = (m + n + 1) / 2;
+    int lo = 0, hi = m;
+    while (lo <= hi) {
+        int i = lo + (hi - lo) / 2;      // cut in a
+        int j = half - i;                // matching cut in b
+        int aLeft  = i == 0 ? Integer.MIN_VALUE : a[i - 1];
+        int aRight = i == m ? Integer.MAX_VALUE : a[i];
+        int bLeft  = j == 0 ? Integer.MIN_VALUE : b[j - 1];
+        int bRight = j == n ? Integer.MAX_VALUE : b[j];
+
+        if (aLeft <= bRight && bLeft <= aRight) {              // correct partition found
+            if ((m + n) % 2 == 1) return Math.max(aLeft, bLeft);
+            return (Math.max(aLeft, bLeft) + Math.min(aRight, bRight)) / 2.0;
+        } else if (aLeft > bRight) hi = i - 1;                // took too many from a
+        else lo = i + 1;                                      // took too few from a
+    }
+    return 0.0;
+}
+```
+
+The `±Infinity` sentinels for out-of-range cuts remove every edge case, so the partition check is one clean condition.
+
+- **Time:** O(log(min(m, n))). **Space:** O(1).
+
+**Prep note.** This is a rite-of-passage binary search — not over values but over *where to cut*. If it's beyond time, the O(m+n) merge-halfway approach is an honest fallback to state first.
+
+---
+
+## The pattern, in one line
+
+Hashing enforces **grid constraints** in one pass; two pointers moving the shorter side handle **trapped water**; binary search extends to **timelines** (largest timestamp `≤` T) and even to **partition points** (median of two sorted arrays) — not just values in an array.
+
+Next in **Part 4: Linked List** — arithmetic on lists, random pointers, and cycle-as-duplicate.

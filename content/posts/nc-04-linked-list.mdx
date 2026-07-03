@@ -1,0 +1,159 @@
+---
+title: "NeetCode 150 in Java — Part 4: Linked List"
+date: "2026-07-23"
+excerpt: "Add Two Numbers, Copy List with Random Pointer, Find the Duplicate Number, and Reverse Nodes in k-Group. List arithmetic with carry, interleaved cloning, cycle detection on an array, and block-wise reversal."
+tags: ["dsa", "java", "linked-list", "fast-slow-pointers", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 4
+---
+
+# Linked List
+
+**Part 4.** The harder list problems: **arithmetic with a carry**, **cloning with tangled pointers**, a cycle-detection trick applied to an *array*, and **reversing in fixed-size blocks**. The dummy head and fast/slow pointers from Blind 75 carry over.
+
+Standard node:
+
+```java
+class ListNode { int val; ListNode next; ListNode(int v) { val = v; } }
+```
+
+---
+
+## 1. Add Two Numbers
+
+> Two numbers stored as reversed digit lists; return their sum as a list.
+
+Because the lists are least-significant-digit first, walk both in lockstep, summing digits plus a **carry**, and emit one node per step. A dummy head collects the result; the carry can produce a final leading node.
+
+```java
+public ListNode addTwoNumbers(ListNode a, ListNode b) {
+    ListNode dummy = new ListNode(0), tail = dummy;
+    int carry = 0;
+    while (a != null || b != null || carry != 0) {
+        int sum = carry;
+        if (a != null) { sum += a.val; a = a.next; }
+        if (b != null) { sum += b.val; b = b.next; }
+        carry = sum / 10;
+        tail.next = new ListNode(sum % 10);
+        tail = tail.next;
+    }
+    return dummy.next;
+}
+```
+
+Looping while `carry != 0` — even after both lists end — handles the final carry (e.g. `5 + 5 = 10`) without a special case.
+
+- **Time:** O(max(m, n)). **Space:** O(max(m, n)).
+
+**Prep note.** The reversed-digit storage is what makes this clean — you process least-significant first, exactly how addition carries. If digits were forward-order, you'd reverse first or use a stack.
+
+---
+
+## 2. Copy List with Random Pointer
+
+> Deep-copy a list where each node has a `next` and a `random` pointer to any node.
+
+The `random` pointers make a naive copy impossible — the target may not exist yet. The elegant O(1)-space trick: **interleave** each clone right after its original (`A → A' → B → B' …`), so a clone's random is simply `original.random.next`. Then un-weave the two lists.
+
+```java
+public Node copyRandomList(Node head) {
+    if (head == null) return null;
+    for (Node cur = head; cur != null; cur = cur.next.next) {   // 1. weave clones in
+        Node copy = new Node(cur.val);
+        copy.next = cur.next;
+        cur.next = copy;
+    }
+    for (Node cur = head; cur != null; cur = cur.next.next)      // 2. wire random pointers
+        if (cur.random != null) cur.next.random = cur.random.next;
+
+    Node dummy = new Node(0), copyTail = dummy;                  // 3. un-weave
+    for (Node cur = head; cur != null; cur = cur.next) {
+        copyTail.next = cur.next;
+        copyTail = copyTail.next;
+        cur.next = cur.next.next;                                // restore original list
+    }
+    return dummy.next;
+}
+```
+
+With clones interleaved, `cur.random.next` *is* the clone of `cur.random` — the interleaving turns an impossible lookup into a one-hop step.
+
+- **Time:** O(n). **Space:** O(1) extra.
+
+**Prep note.** The simpler O(n)-space version uses a `HashMap<Node, Node>` from original to clone. Lead with that for clarity, then offer the interleaving trick as the space optimization.
+
+---
+
+## 3. Find the Duplicate Number
+
+> An array of `n+1` integers in `[1, n]` has exactly one duplicate. Find it without modifying the array, in O(1) space.
+
+Read the array as a linked list: index `i` "points to" index `nums[i]`. Since two indices share a value, that value is where two pointers converge — a **cycle**. Floyd's fast/slow finds the cycle, then a second phase finds its entrance, which is the duplicate.
+
+```java
+public int findDuplicate(int[] nums) {
+    int slow = nums[0], fast = nums[0];
+    do {                                     // phase 1: find a meeting point in the cycle
+        slow = nums[slow];
+        fast = nums[nums[fast]];
+    } while (slow != fast);
+
+    slow = nums[0];                          // phase 2: find the cycle entrance = duplicate
+    while (slow != fast) { slow = nums[slow]; fast = nums[fast]; }
+    return slow;
+}
+```
+
+The value that two array positions map to is the cycle's entry point — exactly Floyd's cycle-start subroutine, applied to indices instead of nodes.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Recognizing "array values as pointers → cycle detection" is the whole insight. The obvious O(n)-space set or sorting solutions violate the constraints; this is the intended one.
+
+---
+
+## 4. Reverse Nodes in k-Group
+
+> Reverse the list in consecutive groups of `k`; leave a trailing remainder of fewer than `k` untouched.
+
+Reverse each block only if a full `k` nodes remain (check first). Reverse the block in place, then reconnect it to the previous block's tail and the next block's head. A dummy head anchors the very first reconnection.
+
+```java
+public ListNode reverseKGroup(ListNode head, int k) {
+    ListNode dummy = new ListNode(0);
+    dummy.next = head;
+    ListNode groupPrev = dummy;
+
+    while (true) {
+        ListNode kth = groupPrev;                        // find the k-th node ahead
+        for (int i = 0; i < k && kth != null; i++) kth = kth.next;
+        if (kth == null) break;                          // fewer than k left → stop
+
+        ListNode groupNext = kth.next, prev = groupNext, cur = groupPrev.next;
+        while (cur != groupNext) {                        // reverse this block
+            ListNode next = cur.next;
+            cur.next = prev;
+            prev = cur;
+            cur = next;
+        }
+        ListNode newTail = groupPrev.next;               // old head becomes the block's tail
+        groupPrev.next = kth;                            // wire prev block to reversed head
+        groupPrev = newTail;                             // advance to next block
+    }
+    return dummy.next;
+}
+```
+
+Seeding `prev` with `groupNext` (not null) is the trick that reconnects each reversed block straight to the untouched remainder.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** This composes "check k nodes exist," "reverse a bounded sublist," and "reconnect." It's the culmination of the reversal work from Blind 75 — draw the four pointers (`groupPrev`, `kth`, `groupNext`, `newTail`) before coding.
+
+---
+
+## The pattern, in one line
+
+Advanced list work is still pointers and dummy heads: process digits with a **carry**, **interleave clones** to resolve tangled pointers in O(1) space, treat **array values as links** to reuse cycle detection, and **reverse in bounded blocks** by checking-then-reversing-then-reconnecting.
+
+Next in **Part 5: Design & Heap** — LRU, a mini Twitter, and the streaming-K structures.

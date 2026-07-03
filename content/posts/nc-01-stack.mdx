@@ -1,0 +1,141 @@
+---
+title: "NeetCode 150 in Java — Part 1: Stack"
+date: "2026-07-20"
+excerpt: "Min Stack, Evaluate Reverse Polish Notation, Generate Parentheses, and Daily Temperatures. Augmenting a stack with extra state, evaluating postfix, backtracking with a stack of choices, and the monotonic stack."
+tags: ["dsa", "java", "stack", "monotonic-stack", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 1
+---
+
+# Stack
+
+This series picks up where **Blind 75** left off, covering the problems the **NeetCode 150** roadmap adds — same format: one Java solution, one reusable pattern, per problem.
+
+**Part 1** is the stack, past the Valid-Parentheses basics. Four uses: **carrying extra state** alongside the values, **evaluating postfix**, using the call stack for **guided generation**, and the **monotonic stack** that answers "next greater/smaller" in one pass.
+
+---
+
+## 1. Min Stack
+
+> Design a stack with `push`, `pop`, `top`, and `getMin` — all O(1).
+
+The trick is to store, at each level, the **minimum seen so far** alongside the value. Then `getMin` is just the top's stored minimum — no scanning.
+
+```java
+class MinStack {
+    private final Deque<int[]> stack = new ArrayDeque<>();  // [value, minSoFar]
+
+    public void push(int val) {
+        int min = stack.isEmpty() ? val : Math.min(val, stack.peek()[1]);
+        stack.push(new int[]{val, min});
+    }
+    public void pop()      { stack.pop(); }
+    public int top()       { return stack.peek()[0]; }
+    public int getMin()    { return stack.peek()[1]; }
+}
+```
+
+Pairing each value with the running min means popping automatically restores the previous minimum — no recomputation.
+
+- **Time:** O(1) all ops. **Space:** O(n).
+
+**Prep note.** "Augment each stack entry with the answer to the query" generalizes: a max-stack, or a stack tracking a running sum, works the same way.
+
+---
+
+## 2. Evaluate Reverse Polish Notation
+
+> Evaluate an arithmetic expression in postfix (RPN) notation.
+
+Postfix is *built* for a stack: push numbers; on an operator, pop the top two, apply, push the result. When the tokens run out, the single remaining value is the answer.
+
+```java
+public int evalRPN(String[] tokens) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    for (String t : tokens) {
+        switch (t) {
+            case "+" -> stack.push(stack.pop() + stack.pop());
+            case "*" -> stack.push(stack.pop() * stack.pop());
+            case "-" -> { int b = stack.pop(), a = stack.pop(); stack.push(a - b); }
+            case "/" -> { int b = stack.pop(), a = stack.pop(); stack.push(a / b); }
+            default  -> stack.push(Integer.parseInt(t));
+        }
+    }
+    return stack.pop();
+}
+```
+
+Order matters for `−` and `/`: the *first* pop is the right operand, so bind `b` then `a`.
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** RPN is why stacks and expression evaluation are joined at the hip. Converting infix→postfix (shunting-yard) is the natural follow-up.
+
+---
+
+## 3. Generate Parentheses
+
+> Generate all valid combinations of `n` pairs of parentheses.
+
+Backtracking, with the recursion stack tracking your choices. Add `(` while you have opens left; add `)` only while closes remaining exceed opens remaining (which keeps it valid). Record when the string is full length.
+
+```java
+public List<String> generateParenthesis(int n) {
+    List<String> res = new ArrayList<>();
+    backtrack(res, new StringBuilder(), n, n);
+    return res;
+}
+
+private void backtrack(List<String> res, StringBuilder sb, int open, int close) {
+    if (open == 0 && close == 0) { res.add(sb.toString()); return; }
+    if (open > 0) {                                  // can still open
+        sb.append('('); backtrack(res, sb, open - 1, close); sb.deleteCharAt(sb.length() - 1);
+    }
+    if (close > open) {                              // closing stays valid only if close > open remaining
+        sb.append(')'); backtrack(res, sb, open, close - 1); sb.deleteCharAt(sb.length() - 1);
+    }
+}
+```
+
+The `close > open` guard is the validity invariant — it forbids a `)` that has no matching `(` yet.
+
+- **Time:** O(4ⁿ / √n) (Catalan). **Space:** O(n) depth.
+
+**Prep note.** Encoding the *rule that keeps a partial solution valid* as a branch condition — rather than generating everything and filtering — is the essence of efficient backtracking.
+
+---
+
+## 4. Daily Temperatures
+
+> For each day, how many days until a warmer temperature? (0 if none.)
+
+A **monotonic decreasing stack** of indices. While the current temperature exceeds the temperature at the stack's top index, that earlier day's answer *is* the gap to today — pop and record it. Each index is pushed and popped once.
+
+```java
+public int[] dailyTemperatures(int[] temps) {
+    int[] res = new int[temps.length];
+    Deque<Integer> stack = new ArrayDeque<>();   // indices, temps decreasing down the stack
+    for (int i = 0; i < temps.length; i++) {
+        while (!stack.isEmpty() && temps[i] > temps[stack.peek()]) {
+            int prev = stack.pop();
+            res[prev] = i - prev;                // today resolves that earlier colder day
+        }
+        stack.push(i);
+    }
+    return res;
+}
+```
+
+Because each index enters and leaves the stack exactly once, the nested `while` still totals O(n).
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** The monotonic stack is *the* tool for "next greater / next smaller element" and underlies the histogram problem in Part 2. Storing indices (not values) lets you compute distances.
+
+---
+
+## The pattern, in one line
+
+Beyond matching, a stack can **carry per-level state** (min-stack), **evaluate postfix**, **drive valid generation** via its call stack, and — kept **monotonic** — resolve "next greater/smaller" for every element in a single O(n) pass.
+
+Next in **Part 2: Stack II & Sliding Window** — car fleets, histograms, and window extremes.

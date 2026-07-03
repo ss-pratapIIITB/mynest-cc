@@ -1,0 +1,148 @@
+---
+title: "NeetCode 150 in Java — Part 2: Stack II & Sliding Window"
+date: "2026-07-21"
+excerpt: "Car Fleet, Largest Rectangle in Histogram, Sliding Window Maximum, and Permutation in String. More monotonic-stack power, plus the monotonic deque and fixed-window frequency matching."
+tags: ["dsa", "java", "stack", "sliding-window", "monotonic-stack", "neetcode", "series:neetcode-150"]
+series: "NeetCode 150 in Java"
+seriesOrder: 2
+---
+
+# Stack II & Sliding Window
+
+**Part 2.** Two harder monotonic-stack problems, then the sliding window's advanced forms: a **monotonic deque** for window maximums, and a **fixed-size window with a frequency match**.
+
+---
+
+## 1. Car Fleet
+
+> Cars at positions heading to a `target` at various speeds; a faster car behind a slower one joins its fleet (can't pass). Count the fleets that arrive.
+
+Sort cars by position, closest to the target first. Compute each car's **arrival time** (`(target − pos) / speed`). Walk from the front: if a car behind arrives **no later** than the fleet ahead, it catches up and merges; otherwise it forms a new fleet. A stack of arrival times makes the "catches up?" test a comparison against the top.
+
+```java
+public int carFleet(int target, int[] position, int[] speed) {
+    int n = position.length;
+    Integer[] idx = new Integer[n];
+    for (int i = 0; i < n; i++) idx[i] = i;
+    Arrays.sort(idx, (a, b) -> position[b] - position[a]);   // nearest target first
+
+    Deque<Double> stack = new ArrayDeque<>();                // arrival times of fleet leaders
+    for (int i : idx) {
+        double time = (double)(target - position[i]) / speed[i];
+        if (stack.isEmpty() || time > stack.peek()) stack.push(time);  // slower ahead → new fleet
+        // else: arrives no later than the fleet ahead → merges, don't push
+    }
+    return stack.size();
+}
+```
+
+A car only starts a new fleet if it arrives *strictly later* than the one ahead; otherwise it's absorbed and leaves the stack unchanged.
+
+- **Time:** O(n log n). **Space:** O(n).
+
+**Prep note.** Framing "can't pass the car ahead" as "arrival time bounded by the leader" turns a physics-sounding problem into a monotonic stack of times.
+
+---
+
+## 2. Largest Rectangle in Histogram
+
+> Given bar heights (width 1), find the area of the largest rectangle.
+
+A **monotonic increasing stack** of indices. While the incoming bar is shorter than the stack's top, that top bar can't extend further right — pop it and compute the rectangle it anchors, using the new stack top as the left boundary. A sentinel `0` at the end flushes everything.
+
+```java
+public int largestRectangleArea(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();   // indices with increasing heights
+    int best = 0;
+    for (int i = 0; i <= heights.length; i++) {
+        int h = (i == heights.length) ? 0 : heights[i];       // trailing 0 flushes the stack
+        while (!stack.isEmpty() && heights[stack.peek()] > h) {
+            int height = heights[stack.pop()];
+            int leftBound = stack.isEmpty() ? -1 : stack.peek();
+            int width = i - leftBound - 1;                    // spans between the two smaller bars
+            best = Math.max(best, height * width);
+        }
+        stack.push(i);
+    }
+    return best;
+}
+```
+
+When you pop a bar, the current index is its right boundary and the new stack top is its left — the width between them is how far that height extends.
+
+- **Time:** O(n). **Space:** O(n).
+
+**Prep note.** This is the hardest monotonic-stack problem and a frequent gateway. The width formula `i − leftBound − 1` is where solutions slip; derive it from "the two shorter bars that stop the rectangle."
+
+---
+
+## 3. Sliding Window Maximum
+
+> Return the maximum of every window of size `k`.
+
+A **monotonic decreasing deque** of indices holds candidates. Before adding a new index, pop smaller values from the back (they can never be the max while this one is in the window). Pop the front when it slides out of the window. The front is always the current window's max.
+
+```java
+public int[] maxSlidingWindow(int[] nums, int k) {
+    Deque<Integer> dq = new ArrayDeque<>();      // indices, values decreasing front→back
+    int[] res = new int[nums.length - k + 1];
+    for (int i = 0; i < nums.length; i++) {
+        while (!dq.isEmpty() && nums[dq.peekLast()] < nums[i]) dq.pollLast();  // evict smaller
+        dq.offerLast(i);
+        if (dq.peekFirst() == i - k) dq.pollFirst();          // front left the window
+        if (i >= k - 1) res[i - k + 1] = nums[dq.peekFirst()]; // front = window max
+    }
+    return res;
+}
+```
+
+Each index is added and removed at most once, so despite the inner `while` it's linear — a heap-based solution would be O(n log k).
+
+- **Time:** O(n). **Space:** O(k).
+
+**Prep note.** The monotonic deque is the sliding-window analogue of the monotonic stack: it maintains the window's extreme in O(1) amortized. Recognize it whenever you need a rolling max/min.
+
+---
+
+## 4. Permutation in String
+
+> Does `s2` contain a permutation of `s1` as a substring?
+
+A permutation means an exact character-count match. Slide a **fixed window of length `|s1|`** across `s2`, maintaining a running count, and compare against `s1`'s count. Track how many of the 26 counts currently match to make each comparison O(1).
+
+```java
+public boolean checkInclusion(String s1, String s2) {
+    if (s1.length() > s2.length()) return false;
+    int[] need = new int[26], win = new int[26];
+    for (int i = 0; i < s1.length(); i++) { need[s1.charAt(i) - 'a']++; win[s2.charAt(i) - 'a']++; }
+
+    int matches = 0;
+    for (int i = 0; i < 26; i++) if (need[i] == win[i]) matches++;
+
+    for (int r = s1.length(); r < s2.length(); r++) {
+        if (matches == 26) return true;
+        int in = s2.charAt(r) - 'a', out = s2.charAt(r - s1.length()) - 'a';
+        // add the incoming char
+        win[in]++;
+        if (win[in] == need[in]) matches++; else if (win[in] == need[in] + 1) matches--;
+        // remove the outgoing char
+        win[out]--;
+        if (win[out] == need[out]) matches++; else if (win[out] == need[out] - 1) matches--;
+    }
+    return matches == 26;
+}
+```
+
+Maintaining `matches` incrementally avoids re-scanning all 26 counts on every slide — the difference between O(n) and O(26n).
+
+- **Time:** O(|s1| + |s2|). **Space:** O(1).
+
+**Prep note.** Fixed-window problems differ from Part-1's variable windows: the window size never changes, so you add one char and drop one each step. The `matches` counter is the trick that keeps comparison O(1).
+
+---
+
+## The pattern, in one line
+
+The **monotonic stack** extends to fleets and histograms (pop resolves an element's boundary), the **monotonic deque** gives rolling window extremes in O(1), and a **fixed window with an incremental match counter** answers "contains a permutation/anagram" in one pass.
+
+Next in **Part 3: Arrays, Two Pointers & Binary Search** — validation grids, trapped water, and the log-time median.
