@@ -1,0 +1,136 @@
+---
+title: "Blind 75 in Java — Part 5: Arrays II (Prefix, Kadane, Rotated Search)"
+date: "2026-07-05"
+excerpt: "Product of Array Except Self, Maximum Subarray, Maximum Product Subarray, and Search in Rotated Sorted Array. Four array problems whose tricks — prefix/suffix passes, running extremes, and 'which half is sorted' — recur everywhere."
+tags: ["dsa", "java", "arrays", "kadane", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 5
+---
+
+# Arrays II
+
+**Part 5.** Four more array problems, each carrying a reusable trick: turning "everything except me" into a **prefix × suffix** pass, collapsing a subarray DP into a **running extreme** (Kadane), extending that to products where a sign flip matters, and adapting binary search to a **rotated** array by asking *which half is sorted*.
+
+---
+
+## 1. Product of Array Except Self
+
+> Return an array where `output[i]` is the product of all elements except `nums[i]`. **No division**, and O(n) time.
+
+`output[i]` = (product of everything to the left) × (product of everything to the right). Compute the left products in one forward pass, then fold in the right products with a running suffix in a backward pass — no division, and the output array itself is the only "extra" space.
+
+```java
+public int[] productExceptSelf(int[] nums) {
+    int n = nums.length;
+    int[] out = new int[n];
+    out[0] = 1;
+    for (int i = 1; i < n; i++)
+        out[i] = out[i - 1] * nums[i - 1];   // prefix product of everything left of i
+
+    int suffix = 1;
+    for (int i = n - 1; i >= 0; i--) {
+        out[i] *= suffix;                     // fold in product of everything right of i
+        suffix *= nums[i];
+    }
+    return out;
+}
+```
+
+The second pass reuses `out` as the accumulator, so you never allocate a separate suffix array.
+
+- **Time:** O(n). **Space:** O(1) extra (output excluded).
+
+**Prep note.** The division approach (multiply all, divide out each) breaks on zeros and needs special-casing one zero vs. many. The prefix/suffix method handles zeros automatically — lead with it and mention *why* you avoided division.
+
+---
+
+## 2. Maximum Subarray (Kadane)
+
+> Find the contiguous subarray with the largest sum; return that sum.
+
+At each element, decide: **extend** the running subarray, or **start fresh** here? You start fresh whenever the running sum has gone negative, because a negative prefix can only drag down what follows. That single decision is Kadane's algorithm — dynamic programming collapsed to O(1) space.
+
+```java
+public int maxSubArray(int[] nums) {
+    int cur = nums[0], best = nums[0];
+    for (int i = 1; i < nums.length; i++) {
+        cur = Math.max(nums[i], cur + nums[i]);   // extend, or restart at nums[i]
+        best = Math.max(best, cur);
+    }
+    return best;
+}
+```
+
+Seed both `cur` and `best` with `nums[0]` so all-negative arrays return the least-negative element rather than 0.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** To return the actual subarray, track a `start` index that resets whenever you restart `cur`, and record `[start, i]` whenever you beat `best`. The circular-array variant is `max(Kadane, total − minSubarray)`.
+
+---
+
+## 3. Maximum Product Subarray
+
+> Find the contiguous subarray with the largest **product**; return that product.
+
+Products break plain Kadane: a large negative times another negative becomes a large positive. So the minimum matters as much as the maximum. Track **both** the running max and running min product ending here — and swap them when the current number is negative, since multiplying by a negative flips which is which.
+
+```java
+public int maxProduct(int[] nums) {
+    int best = nums[0], curMax = nums[0], curMin = nums[0];
+    for (int i = 1; i < nums.length; i++) {
+        int n = nums[i];
+        if (n < 0) { int t = curMax; curMax = curMin; curMin = t; }  // sign flip swaps roles
+        curMax = Math.max(n, curMax * n);
+        curMin = Math.min(n, curMin * n);
+        best = Math.max(best, curMax);
+    }
+    return best;
+}
+```
+
+Keeping `curMin` is the whole insight — today's smallest (most negative) product is tomorrow's largest once another negative arrives.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** Zeros reset both `curMax` and `curMin` to the current element automatically (`max(0, …)` style), so runs are correctly cut at zeros without a special case.
+
+---
+
+## 4. Search in Rotated Sorted Array
+
+> A sorted array was rotated at an unknown pivot. Find `target`'s index, or `-1`, in O(log n).
+
+At any `mid`, **one half is always properly sorted**. Detect which (compare `nums[lo]` to `nums[mid]`), then check whether the target falls inside that sorted half's range — if so, search it; otherwise search the other half.
+
+```java
+public int search(int[] nums, int target) {
+    int lo = 0, hi = nums.length - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (nums[mid] == target) return mid;
+        if (nums[lo] <= nums[mid]) {                         // left half sorted
+            if (nums[lo] <= target && target < nums[mid]) hi = mid - 1;
+            else lo = mid + 1;
+        } else {                                             // right half sorted
+            if (nums[mid] < target && target <= nums[hi]) lo = mid + 1;
+            else hi = mid - 1;
+        }
+    }
+    return -1;
+}
+```
+
+The `nums[lo] <= nums[mid]` test is what identifies the sorted side; everything else is ordinary binary search bounds.
+
+- **Time:** O(log n). **Space:** O(1).
+
+**Prep note.** With duplicates allowed, the worst case degrades to O(n): when `nums[lo] == nums[mid] == nums[hi]` you can't tell which half is sorted, so shrink both ends by one and continue.
+
+---
+
+## The pattern, in one line
+
+Arrays reward a small kit of moves: **prefix/suffix** passes turn "all except me" linear, a **running extreme** collapses subarray DP to O(1) (carry the min too when signs can flip), and **"which half is sorted"** rescues binary search on rotated data.
+
+Next in **Part 6: Strings & Stack** — matching brackets, encoding, and palindromes by expanding around centers.

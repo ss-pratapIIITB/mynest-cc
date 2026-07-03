@@ -1,0 +1,151 @@
+---
+title: "Blind 75 in Java — Part 6: Strings & Stack"
+date: "2026-07-06"
+excerpt: "Valid Parentheses, Encode and Decode Strings, Longest Palindromic Substring, and Palindromic Substrings. A stack for matching, a length-prefix protocol for serialization, and expand-around-center for palindromes."
+tags: ["dsa", "java", "strings", "stack", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 6
+---
+
+# Strings & Stack
+
+**Part 6.** Four string problems, four distinct tools: a **stack** for nested matching, a **length-prefix protocol** for unambiguous encoding, and **expand-around-center** for both palindrome problems (one idea, two questions).
+
+---
+
+## 1. Valid Parentheses
+
+> Given a string of `()[]{}`, return whether every bracket is closed by the correct type in the correct order.
+
+Nesting is last-in-first-out, which is exactly a **stack**. Push an *expected closer* when you see an opener; on a closer, it must match the top. Empty stack at the end means everything paired.
+
+```java
+public boolean isValid(String s) {
+    Deque<Character> stack = new ArrayDeque<>();
+    for (char c : s.toCharArray()) {
+        if (c == '(') stack.push(')');
+        else if (c == '[') stack.push(']');
+        else if (c == '{') stack.push('}');
+        else if (stack.isEmpty() || stack.pop() != c) return false;  // mismatch or nothing to close
+    }
+    return stack.isEmpty();
+}
+```
+
+Pushing the *closer we expect* (rather than the opener) makes the comparison a single `!=` with no lookup table.
+
+- **Time:** O(n). **Space:** O(n) worst case (all openers).
+
+**Prep note.** `ArrayDeque` is the idiomatic Java stack — faster than the legacy `Stack` class and never `null`-hostile. Guard `stack.isEmpty()` before `pop()` or a closer with nothing open throws.
+
+---
+
+## 2. Encode and Decode Strings
+
+> Design `encode(List<String>)` to a single string and `decode` back. Strings may contain any characters — including your delimiter.
+
+You can't use a plain separator, because any character can appear in the data. The fix is a **length prefix**: write each string's length, a marker, then the string. Decoding reads the length, skips the marker, then takes exactly that many characters — delimiter collisions become impossible.
+
+```java
+public String encode(List<String> strs) {
+    StringBuilder sb = new StringBuilder();
+    for (String s : strs)
+        sb.append(s.length()).append('#').append(s);   // e.g. "5#hello3#foo"
+    return sb.toString();
+}
+
+public List<String> decode(String s) {
+    List<String> res = new ArrayList<>();
+    int i = 0;
+    while (i < s.length()) {
+        int j = i;
+        while (s.charAt(j) != '#') j++;          // read the length digits
+        int len = Integer.parseInt(s.substring(i, j));
+        res.add(s.substring(j + 1, j + 1 + len)); // take exactly len chars
+        i = j + 1 + len;
+    }
+    return res;
+}
+```
+
+The length tells you precisely how far to read, so a `#` *inside* a string is just data, never a boundary.
+
+- **Time:** O(total length). **Space:** O(total length).
+
+**Prep note.** This length-prefix framing is a real serialization pattern (it's how many wire protocols frame messages). Naming that connection signals you understand *why* naive delimiters fail.
+
+---
+
+## 3. Longest Palindromic Substring
+
+> Return the longest substring of `s` that is a palindrome.
+
+Every palindrome has a center and mirrors outward. There are `2n − 1` possible centers (each character, and each gap between characters for even-length palindromes). **Expand around each center** while the characters match, tracking the longest span found.
+
+```java
+public String longestPalindrome(String s) {
+    int start = 0, end = 0;
+    for (int i = 0; i < s.length(); i++) {
+        int odd = expand(s, i, i);       // odd-length, centered on i
+        int even = expand(s, i, i + 1);  // even-length, centered between i and i+1
+        int len = Math.max(odd, even);
+        if (len > end - start + 1) {
+            start = i - (len - 1) / 2;
+            end = i + len / 2;
+        }
+    }
+    return s.substring(start, end + 1);
+}
+
+private int expand(String s, int l, int r) {
+    while (l >= 0 && r < s.length() && s.charAt(l) == s.charAt(r)) { l--; r++; }
+    return r - l - 1;   // length of the matched palindrome
+}
+```
+
+Running both odd and even expansions from each index covers all centers in O(n²) with O(1) space — simpler than the O(n²) DP table and usually faster in practice.
+
+- **Time:** O(n²). **Space:** O(1).
+
+**Prep note.** The O(n) Manacher's algorithm exists but is rarely expected — mention it as the asymptotically optimal option, then implement expand-around-center, which is the one you can write cleanly under pressure.
+
+---
+
+## 4. Palindromic Substrings
+
+> Count how many substrings of `s` are palindromes.
+
+Same engine as above — expand around all `2n − 1` centers — but instead of tracking the longest, **count each successful expansion step**, since every step that still matches is one more palindromic substring.
+
+```java
+public int countSubstrings(String s) {
+    int count = 0;
+    for (int i = 0; i < s.length(); i++) {
+        count += countFrom(s, i, i);       // odd-length centers
+        count += countFrom(s, i, i + 1);   // even-length centers
+    }
+    return count;
+}
+
+private int countFrom(String s, int l, int r) {
+    int count = 0;
+    while (l >= 0 && r < s.length() && s.charAt(l) == s.charAt(r)) {
+        count++; l--; r++;
+    }
+    return count;
+}
+```
+
+Longest-palindrome and count-palindromes are the *same problem* with a different accumulator — recognizing that saves you from learning two techniques.
+
+- **Time:** O(n²). **Space:** O(1).
+
+**Prep note.** If asked back-to-back with problem 3, say it out loud: "same expand-around-center, I just count steps instead of tracking the max." That framing is the signal that you see the shared structure.
+
+---
+
+## The pattern, in one line
+
+Reach for a **stack** when nesting/matching is LIFO, a **length prefix** when a delimiter could collide with data, and **expand-around-center** for palindromes — the last one powers both "longest" and "how many" by swapping what you accumulate.
+
+Next in **Part 7: Matrix** — in-place marking, boundary walks, and grid backtracking.

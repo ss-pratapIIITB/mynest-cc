@@ -1,0 +1,153 @@
+---
+title: "Blind 75 in Java — Part 7: Matrix"
+date: "2026-07-07"
+excerpt: "Set Matrix Zeroes, Spiral Matrix, Rotate Image, and Word Search. Using the matrix itself as scratch space, walking shrinking boundaries, decomposing rotation into transpose + reverse, and backtracking over a grid."
+tags: ["dsa", "java", "matrix", "backtracking", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 7
+---
+
+# Matrix
+
+**Part 7.** Grid problems reward two habits: using the **matrix itself** as scratch space to hit O(1) extra memory, and decomposing a scary transform into **two simple passes**. We close with grid backtracking, the bridge to Part 13.
+
+---
+
+## 1. Set Matrix Zeroes
+
+> If a cell is 0, set its entire row and column to 0 — **in place**, O(1) extra space.
+
+The naive fix uses O(m+n) marker arrays. To reach O(1), store those markers **in the matrix's own first row and column**. Use one extra boolean for the first column itself (since cell `[0][0]` has to serve both row and column). Mark in one pass, apply in a second, and handle the first row/column last so you don't clobber your own markers early.
+
+```java
+public void setZeroes(int[][] matrix) {
+    int m = matrix.length, n = matrix[0].length;
+    boolean firstColZero = false;
+
+    for (int r = 0; r < m; r++) {
+        if (matrix[r][0] == 0) firstColZero = true;
+        for (int c = 1; c < n; c++)
+            if (matrix[r][c] == 0) { matrix[r][0] = 0; matrix[0][c] = 0; }  // mark in row/col headers
+    }
+    // apply, working inward so headers stay intact until read
+    for (int r = m - 1; r >= 0; r--) {
+        for (int c = n - 1; c >= 1; c--)
+            if (matrix[r][0] == 0 || matrix[0][c] == 0) matrix[r][c] = 0;
+        if (firstColZero) matrix[r][0] = 0;
+    }
+}
+```
+
+Applying bottom-up and right-to-left ensures the header cells are consumed before they'd be overwritten.
+
+- **Time:** O(m·n). **Space:** O(1).
+
+**Prep note.** The `firstColZero` flag exists because `matrix[0][0]` can only encode one of "first row has a zero" or "first column has a zero." Splitting the column signal into a separate variable resolves the collision.
+
+---
+
+## 2. Spiral Matrix
+
+> Return all elements of an m×n matrix in spiral order.
+
+Maintain four shrinking boundaries — `top, bottom, left, right`. Walk the top row rightward, the right column down, the bottom row left, the left column up, **shrinking the boundary you just consumed**. The two inner guards prevent re-walking a row or column when the matrix isn't square.
+
+```java
+public List<Integer> spiralOrder(int[][] m) {
+    List<Integer> res = new ArrayList<>();
+    int top = 0, bottom = m.length - 1, left = 0, right = m[0].length - 1;
+    while (top <= bottom && left <= right) {
+        for (int c = left; c <= right; c++) res.add(m[top][c]);
+        top++;
+        for (int r = top; r <= bottom; r++) res.add(m[r][right]);
+        right--;
+        if (top <= bottom) {                       // guard: bottom row not already taken
+            for (int c = right; c >= left; c--) res.add(m[bottom][c]);
+            bottom--;
+        }
+        if (left <= right) {                        // guard: left column not already taken
+            for (int r = bottom; r >= top; r--) res.add(m[r][left]);
+            left++;
+        }
+    }
+    return res;
+}
+```
+
+The generating variant (fill 1..n² in spiral order) is the same four-boundary walk, writing instead of reading.
+
+- **Time:** O(m·n). **Space:** O(1) extra.
+
+**Prep note.** The two `if` guards are the whole correctness story for non-square grids — without them a single leftover row or column gets traversed twice.
+
+---
+
+## 3. Rotate Image
+
+> Rotate an n×n matrix 90° clockwise, in place.
+
+Don't compute rotated coordinates directly — **decompose**. Transpose (mirror over the main diagonal), then reverse each row. Both are trivial in-place operations, and their composition is exactly a clockwise quarter-turn.
+
+```java
+public void rotate(int[][] m) {
+    int n = m.length;
+    for (int i = 0; i < n; i++)                     // transpose
+        for (int j = i + 1; j < n; j++) {
+            int t = m[i][j]; m[i][j] = m[j][i]; m[j][i] = t;
+        }
+    for (int[] row : m) {                           // reverse each row
+        int l = 0, r = n - 1;
+        while (l < r) { int t = row[l]; row[l++] = row[r]; row[r--] = t; }
+    }
+}
+```
+
+Starting the transpose inner loop at `j = i + 1` swaps each pair once — starting at `0` would swap them back.
+
+- **Time:** O(n²). **Space:** O(1).
+
+**Prep note.** Counter-clockwise is the mirror recipe: reverse each row first, then transpose (or transpose then reverse columns). 180° is reverse rows then reverse each row.
+
+---
+
+## 4. Word Search
+
+> Given a grid of letters, return whether `word` exists along a path of adjacent cells (no cell reused).
+
+This is **backtracking on a grid**: from each starting cell, DFS in four directions matching the word letter by letter, marking cells visited by temporarily mutating them, and un-marking on the way out.
+
+```java
+public boolean exist(char[][] board, String word) {
+    for (int r = 0; r < board.length; r++)
+        for (int c = 0; c < board[0].length; c++)
+            if (dfs(board, word, r, c, 0)) return true;
+    return false;
+}
+
+private boolean dfs(char[][] b, String w, int r, int c, int i) {
+    if (i == w.length()) return true;                        // matched all letters
+    if (r < 0 || r >= b.length || c < 0 || c >= b[0].length || b[r][c] != w.charAt(i))
+        return false;
+
+    char saved = b[r][c];
+    b[r][c] = '#';                                           // mark visited
+    boolean found = dfs(b, w, r + 1, c, i + 1) || dfs(b, w, r - 1, c, i + 1)
+                 || dfs(b, w, r, c + 1, i + 1) || dfs(b, w, r, c - 1, i + 1);
+    b[r][c] = saved;                                         // un-mark (backtrack)
+    return found;
+}
+```
+
+Overwriting with a sentinel like `#` is an O(1) visited-set that costs no extra memory — just remember to restore it.
+
+- **Time:** O(m·n·4^L) for word length L. **Space:** O(L) recursion.
+
+**Prep note.** For *many* words on one board (Word Search II), this brute force is too slow — you build a Trie of the words and DFS once. That upgrade is in Part 13.
+
+---
+
+## The pattern, in one line
+
+Grids let you use the **matrix as its own scratch space** for O(1) memory, and turn intimidating transforms into **two clean passes**. Path-finding on a grid is backtracking: DFS, mark, recurse, un-mark.
+
+Next in **Part 8: Linked List I** — dummy heads, in-place reversal, and fast/slow pointers.

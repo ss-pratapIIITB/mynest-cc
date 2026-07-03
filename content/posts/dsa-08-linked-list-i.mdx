@@ -1,0 +1,132 @@
+---
+title: "Blind 75 in Java — Part 8: Linked List I"
+date: "2026-07-08"
+excerpt: "Reverse Linked List, Linked List Cycle, Merge Two Sorted Lists, and Remove Nth Node From End. The core toolkit: three-pointer reversal, Floyd's fast/slow, and the dummy head that erases edge cases."
+tags: ["dsa", "java", "linked-list", "two-pointers", "blind75", "neetcode", "series:blind75-neetcode"]
+series: "Blind 75 & NeetCode in Java"
+seriesOrder: 8
+---
+
+# Linked List I
+
+**Part 8.** Linked lists test **pointer precision**, not cleverness. Three tools cover most of the list: a **three-pointer reversal**, **fast/slow pointers** for cycles and midpoints, and a **dummy head** that makes "what if it's the first node?" disappear. Draw the nodes on paper — these are bug-prone if you code blind.
+
+All examples assume the standard node:
+
+```java
+class ListNode { int val; ListNode next; ListNode(int v) { val = v; } }
+```
+
+---
+
+## 1. Reverse Linked List
+
+> Reverse a singly linked list and return the new head.
+
+Walk the list with **three pointers**: `prev`, `cur`, and a saved `next`. At each node, redirect `cur.next` to `prev`, then slide all three forward. Save `next` *before* you overwrite the link or you lose the rest of the list.
+
+```java
+public ListNode reverseList(ListNode head) {
+    ListNode prev = null, cur = head;
+    while (cur != null) {
+        ListNode next = cur.next;   // save before overwriting
+        cur.next = prev;            // reverse the link
+        prev = cur;                 // advance prev
+        cur = next;                 // advance cur
+    }
+    return prev;                    // prev is the new head
+}
+```
+
+When `cur` falls off the end, `prev` sits on the old tail — the new head.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The recursive version is elegant but uses O(n) stack. Mention both; code the iterative one, since it's O(1) space and the building block for k-group reversal (Part 9).
+
+---
+
+## 2. Linked List Cycle
+
+> Return whether the list has a cycle.
+
+**Floyd's fast/slow pointers.** `slow` moves one step, `fast` two. If there's a cycle, `fast` laps `slow` and they meet; if `fast` reaches the end, the list is acyclic. No extra memory, unlike a visited `HashSet`.
+
+```java
+public boolean hasCycle(ListNode head) {
+    ListNode slow = head, fast = head;
+    while (fast != null && fast.next != null) {
+        slow = slow.next;        // 1 step
+        fast = fast.next.next;   // 2 steps
+        if (slow == fast) return true;
+    }
+    return false;
+}
+```
+
+Checking both `fast != null` and `fast.next != null` guards the two-step hop against null-dereference at the tail.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** To find the cycle's *start*: after they meet, reset one pointer to `head` and advance both one step at a time — they meet again exactly at the cycle entrance. That's the same trick behind Find the Duplicate Number.
+
+---
+
+## 3. Merge Two Sorted Lists
+
+> Merge two sorted lists into one sorted list and return its head.
+
+A **dummy head** removes the "which list is the first node?" special case. Keep a `tail` pointer; repeatedly attach the smaller of the two front nodes and advance. When one list runs out, attach the remainder of the other in a single link.
+
+```java
+public ListNode mergeTwoLists(ListNode a, ListNode b) {
+    ListNode dummy = new ListNode(0), tail = dummy;
+    while (a != null && b != null) {
+        if (a.val <= b.val) { tail.next = a; a = a.next; }
+        else                { tail.next = b; b = b.next; }
+        tail = tail.next;
+    }
+    tail.next = (a != null) ? a : b;   // attach whatever's left
+    return dummy.next;
+}
+```
+
+`dummy.next` is the real head — the dummy exists only so `tail` always has a valid node to append to from step one.
+
+- **Time:** O(m + n). **Space:** O(1).
+
+**Prep note.** The dummy-head pattern generalizes to almost every list-building problem. Merging K lists (Part 9) is this same merge driven by a heap.
+
+---
+
+## 4. Remove Nth Node From End
+
+> Remove the nth node from the end in **one pass**, and return the head.
+
+Use a **gap of n** between two pointers. Advance `fast` n steps first; then move `fast` and `slow` together until `fast` hits the end. Now `slow` sits just before the target. A dummy head handles the case where the node to remove is the head itself.
+
+```java
+public ListNode removeNthFromEnd(ListNode head, int n) {
+    ListNode dummy = new ListNode(0);
+    dummy.next = head;
+    ListNode fast = dummy, slow = dummy;
+    for (int i = 0; i < n; i++) fast = fast.next;   // open a gap of n
+    while (fast.next != null) { fast = fast.next; slow = slow.next; }
+    slow.next = slow.next.next;                      // unlink the nth-from-end
+    return dummy.next;
+}
+```
+
+Starting both at `dummy` (not `head`) is what lets you delete the original head without a separate branch.
+
+- **Time:** O(n). **Space:** O(1).
+
+**Prep note.** The fixed-gap two-pointer trick — advance one pointer k ahead, then move together — answers any "kth from the end" question in a single pass without counting length first.
+
+---
+
+## The pattern, in one line
+
+Three moves cover linked lists: **three-pointer reversal**, **fast/slow pointers** (cycles, midpoints, kth-from-end), and a **dummy head** to erase first-node edge cases. Draw before you code.
+
+Next in **Part 9: Linked List II & Heap** — reordering, k-way merge, and the priority-queue problems.
