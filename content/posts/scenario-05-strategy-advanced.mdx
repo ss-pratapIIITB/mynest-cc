@@ -1,0 +1,87 @@
+---
+title: "Scenario-Based Prep — Part 5: Strategy & Advanced Scenarios"
+date: "2026-08-11"
+excerpt: "Market expansion with CAGE, pricing with Jobs-To-Be-Done, an advanced federated-learning rollout weighing privacy against complexity, and a full mock walkthrough that ties the whole method together."
+tags: ["scenario-based", "leadership", "strategy", "pricing", "prep", "series:scenario-prep"]
+series: "Scenario-Based Prep"
+seriesOrder: 5
+---
+
+# Strategy & Advanced Scenarios
+
+The final cluster stretches from market strategy to a genuinely hard technical-strategy call — then a full walkthrough that runs the entire method end to end. Same shape as before, closing with a mock you can practice against.
+
+---
+
+## 1. Global expansion
+
+> *"Leadership wants to expand into three new countries next year. How would you approach deciding where and how?"*
+
+**What's tested:** whether you can narrow a huge, fuzzy question to the few factors that actually decide it.
+
+**Structure — CAGE:** assess the distance across **Cultural, Administrative, Geographic, Economic** dimensions — then focus on only the two or three factors that dominate this decision.
+
+**A strong answer:** "I'd frame each candidate market through CAGE, but resist analyzing all four dimensions equally — most markets are won or lost on two of them. For a data product, the **Administrative** distance usually dominates: data-residency law, regulation, and licensing can be a hard gate regardless of how attractive the market looks. **Economic** distance — willingness to pay and cost to serve — is typically the second. I'd score the candidates on those dominant factors first, use Cultural and Geographic as tie-breakers, and recommend sequencing: enter the lowest-friction market first to build a playbook, then the harder ones. The output isn't 'these three' — it's 'this order, for these two reasons each.'"
+
+**Watch out for:** an exhaustive four-dimension essay with no prioritization; ignoring a regulatory gate because the market is otherwise appealing; treating expansion as simultaneous rather than sequenced.
+
+**Likely follow-ups:** *"One market is huge but heavily regulated."* → separate the *prize* from the *gate*; if the administrative gate is a hard blocker, it goes later behind a compliance workstream, not first — size doesn't beat a legal wall.
+
+---
+
+## 2. Pricing strategy
+
+> *"You're launching a new product tier. How do you decide what to charge?"*
+
+**What's tested:** whether you anchor on customer value rather than internal cost or gut feel.
+
+**Structure — Jobs-To-Be-Done + evidence:** identify the *job* the customer hires the product for → **customer conversations** → **willingness-to-pay** research → **competitive analysis** → **pricing experiments**.
+
+**A strong answer:** "I'd start from the job the customer is hiring this tier to do and what *getting that job done* is worth to them — value first, not cost-plus. I'd ground it in evidence: talk to target customers about the job and their current alternatives, probe willingness-to-pay (van Westendorp-style or direct), and map competitors to see the reference prices customers already anchor on. Then I wouldn't bet the launch on a single guess — I'd run pricing experiments (A/B on tiers, regional tests) and let the data set the point. The framing to leadership: 'here's the value hypothesis, here's the evidence, and here's how we'll de-risk the exact number with experiments.'"
+
+**Watch out for:** cost-plus pricing that ignores value; a single price with no experimentation; forgetting that customers anchor on competitors' prices whether or not you do.
+
+**Likely follow-ups:** *"Willingness-to-pay and competitor prices disagree."* → that gap is a *positioning* decision: price to value if you can defend the differentiation, price to the reference if the category is commoditized — and test both.
+
+---
+
+## 3. Advanced — a federated-learning rollout
+
+> *"Your product could adopt federated learning — training on customer data without it ever leaving their environment. It's a privacy win but a big engineering lift. Do you do it, and how?"*
+
+**What's tested:** holding a real technical-strategy trade-off — genuine upside against genuine cost — and proposing a de-risked path rather than a yes/no.
+
+**Structure:** lay out benefits *and* risks explicitly, then recommend a **pilot → phased adoption** path.
+
+**A strong answer:** "The benefits are strategic: stronger **privacy**, easier **regulatory compliance**, more **customer trust**, and real **competitive differentiation** for privacy-sensitive segments. The costs are equally real: much higher **engineering complexity**, a **longer implementation**, and ongoing **operational challenges** (debugging models you can't see the data for, uneven client environments). Given that shape — high upside, high uncertainty — I wouldn't commit the whole roadmap or reject it outright. I'd recommend a **pilot** with one or two privacy-motivated design partners to validate that the complexity is tractable and the privacy claim is real, then a **phased rollout** to the segments where the trust differentiation actually drives revenue. That captures the strategic upside while bounding the bet."
+
+**Watch out for:** presenting only the privacy upside and hiding the cost; an all-or-nothing recommendation; underestimating the operational reality of debugging without data access.
+
+**Likely follow-ups:** *"The pilot works but ops load is brutal."* → then the phased plan gates on solving the ops problem (tooling, observability) before broad rollout; a great capability with unsustainable ops isn't ready to generalize.
+
+---
+
+## Putting it together — a full mock
+
+> *"A top-10 customer threatens to leave over data-residency concerns. Sales wants to promise a dedicated in-region deployment by next quarter. Engineering says that's six months minimum. Legal isn't sure our current setup is even compliant in that region. You're in the room. What do you do?"*
+
+Run the **whole method** — this prompt deliberately fuses customer, decision, compliance, and strategy:
+
+1. **Slow down / clarify the decision.** The real decision isn't "can we ship in-region by Q3" — it's *"what can we credibly commit to this customer now, without over-promising or breaching compliance."*
+2. **Stakeholders.** The customer's champion; sales (owns the commitment); engineering (owns feasibility); legal (owns the compliance gate); leadership (owns any commercial concession).
+3. **Compliance first — Pause–Assess–Align.** Legal's uncertainty is a *gate*. Before any promise, get a fast read on current compliance; we can't sell a deployment that's illegal in-region.
+4. **Options with trade-offs.**
+   - Promise Q3 in-region (sales' ask) → likely breaks the 6-month reality and legal gate → high trust-destroying risk.
+   - Offer a compliant interim (data-handling controls, contractual commitments) now, with a *realistic* in-region roadmap date → protects trust, buys time.
+   - Decline and risk churn.
+5. **Recommend + why.** The interim-plus-honest-roadmap path: acknowledge the concern, put credible near-term controls in place, and commit to a date engineering will actually hit — because a *kept* six-month promise beats a *missed* one-quarter promise.
+6. **Risks + mitigation.** The customer may still churn on the honest timeline → mitigate with an executive relationship, interim guarantees, and possibly commercial terms; the interim controls must themselves be compliant → legal signs off before we present anything.
+7. **Ownership / next steps.** Legal owns the compliance read (by a date); engineering owns the realistic roadmap; sales owns the reframed commitment *within* those bounds; I own the internal timeline and the guardrail that nothing gets promised externally before legal and engineering confirm it.
+
+Notice: no heroics, no guessing, no over-promise — just the structure, applied.
+
+---
+
+## The whole series, in one line
+
+Scenario rounds reward a repeatable move: **slow down, name the real decision, map who's affected and who decides, weigh honest trade-offs, take a de-risked position, and end with owners and dates** — with a named framework (RAPID, Risk Matrix, Pause–Assess–Align, Five P's, Five Whys, RACI, CAGE, JTBD) as the scaffolding. Practice the shape until it's automatic, and any prompt they throw becomes "which pieces apply here."

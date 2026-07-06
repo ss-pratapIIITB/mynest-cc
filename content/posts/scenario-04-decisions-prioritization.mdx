@@ -1,0 +1,86 @@
+---
+title: "Scenario-Based Prep — Part 4: Decisions & Prioritization"
+date: "2026-08-10"
+excerpt: "Running a decision meeting with RAPID, engineering-versus-product trade-offs from first principles, handling a compliance flag mid-build with Pause–Assess–Align, and translating technical reality for a mixed audience."
+tags: ["scenario-based", "leadership", "decision-making", "prioritization", "prep", "series:scenario-prep"]
+series: "Scenario-Based Prep"
+seriesOrder: 4
+---
+
+# Decisions & Prioritization
+
+This cluster is about **making and framing calls** — who decides, what to build first, when to stop, and how to make a technical trade-off legible to non-technical people. Same shape as Part 3: prompt → what's tested → structure → strong answer → pitfalls → follow-ups.
+
+---
+
+## 1. Running a decision meeting
+
+> *"A cross-functional decision has been dragging for weeks — every meeting ends without resolution. You're asked to get it unstuck. How do you run it?"*
+
+**What's tested:** decision *hygiene* — do you know that unclear ownership, not lack of information, is usually why things stall.
+
+**Structure — RAPID + prep:** name the Recommender, Approver(s), Input, and the single Decider. Prepare a **one-page doc before the meeting** stating: the decision to make, the timeline, the options, the risks, and a recommendation. Leave with owners and deadlines.
+
+**A strong answer:** "Most stuck decisions aren't stuck on facts — they're stuck because nobody knows who decides. So first I'd assign RAPID roles explicitly, especially *one* Decider. Before the meeting I'd circulate a one-pager: here's the decision, the options with trade-offs, the risks, and my recommendation — so the meeting is for *deciding*, not for first-time discovery. We time-box to a decision; if we truly lack a fact needed to decide, we name the fact, assign someone to get it, and set the follow-up. Nobody leaves without owners and dates."
+
+**Watch out for:** running a discussion with no named decider; using the meeting to *inform* rather than *decide*; ending with "let's circle back" and no owner.
+
+**Likely follow-ups:** *"The Decider wants more data forever."* → separate "need to decide well" from "want to feel certain"; agree on the *specific* missing input and a decision date, and default to the reversible option if it slips (a two-way-door decision doesn't need certainty).
+
+---
+
+## 2. Engineering vs. product prioritization
+
+> *"Engineering wants to spend a quarter on platform/tech-debt work. Product wants those weeks for customer-facing features tied to renewals. Both are adamant. How do you decide?"*
+
+**What's tested:** first-principles reasoning and whether you can hold both sides fairly instead of picking a tribe.
+
+**Structure:** reason from first principles → genuinely understand both cases → evaluate on **customer commitments, business impact, technical risk, and parallel-execution options** → often propose **phased delivery**.
+
+**A strong answer:** "I'd start by making both cases as strong as their owners would — what breaks if we *don't* do the platform work (velocity decay, incident risk), and what we lose if we skip the features (a renewal we've committed to). Then I'd evaluate against a few axes: are there hard *customer commitments* with dates? What's the *business impact* and *technical risk* of deferring each? Crucially — do they actually conflict, or can they run in *parallel* with the team split? Usually the answer is a **phased plan**: land the renewal-critical features first, carve a steady fraction of capacity (say 20%) for the highest-risk platform work now, and schedule the rest right after. That protects the commitment without letting debt compound."
+
+**Watch out for:** siding with "your" discipline; treating it as all-or-nothing when phasing exists; ignoring a dated customer commitment that should dominate.
+
+**Likely follow-ups:** *"There's genuinely no capacity for both."* → then it's a real trade-off: name the single most important outcome for the business this quarter, decide against it explicitly, and make the cost of the deferred side visible on the roadmap so it isn't silently dropped.
+
+---
+
+## 3. A compliance concern mid-build
+
+> *"Halfway through building a feature, an engineer realizes it may violate a data-handling regulation. Shipping is weeks away and the team has momentum. What do you do?"*
+
+**What's tested:** whether you'll stop for risk you don't fully understand — and do it surgically, not dramatically.
+
+**Structure — Pause–Assess–Align:** pause the risky path → assess real exposure with experts → align with the risk owners → resume only once risks are understood. Bring legal/compliance in *early*.
+
+**A strong answer:** "I'd pause the *specific* data-handling path — not necessarily the whole feature — so we're not accumulating risk while we figure it out, but the rest of the team keeps moving. Then assess: bring legal/compliance in immediately to scope the actual exposure, because 'may violate' is a question, not a verdict. Align on a compliant design or a mitigation with the people who own that risk. We resume the paused path only once we understand it. The instinct to protect momentum is exactly why you *name* the pause explicitly — quietly shipping through a compliance question is how small issues become headlines."
+
+**Watch out for:** shipping first and asking legal later; halting the entire project when only one path is risky; treating compliance as a box-check instead of a design input.
+
+**Likely follow-ups:** *"Legal says it's a gray area."* → get the risk quantified and choose a design that avoids the gray area if feasible; if not, escalate the residual risk to the accountable decider with options, don't absorb it silently.
+
+---
+
+## 4. Mixed technical & non-technical stakeholders
+
+> *"In a planning meeting, engineers are pushing for a microservices rewrite for future scale; the business wants the fastest possible launch. Both are looking at you. How do you bridge it?"*
+
+**What's tested:** translation — turning architecture into business consequence so a non-technical room can decide.
+
+**Structure:** translate technical language into **business impact**; offer **options**, not jargon.
+
+**A strong answer:** "I'd reframe the technical debate as a business trade-off the whole room can weigh. Something like: *'Microservices let us scale and ship independently later, but they add real implementation time now; a simpler monolith gets us to launch faster but will cost us a refactor if we grow past a certain point.'* Then offer options rather than a verdict: launch on the simpler design now and revisit the split at a known scale trigger, or invest up front if we're confident that scale is imminent. Framed that way, the business can actually make the call, because they can see what each choice buys and costs *them* — not just the engineering elegance."
+
+**Watch out for:** letting the debate stay in engineering jargon the business can't evaluate; picking the "cool" architecture; presenting one option as obviously right instead of surfacing the trade.
+
+**Likely follow-ups:** *"How do you decide the 'scale trigger'?"* → tie it to a concrete metric (users, RPS, data volume) agreed now, so the future decision is pre-committed to data rather than re-litigated.
+
+---
+
+## The through-line
+
+Decision scenarios reward the same reflexes: **name who decides, frame options with honest trade-offs, stop surgically for risk, and translate the technical into the consequential.** You're rarely rewarded for the "right" answer — you're rewarded for making the decision *decidable*.
+
+---
+
+**Next — Part 5: Strategy & Advanced Scenarios** — market expansion with CAGE, pricing with Jobs-To-Be-Done, an advanced federated-learning rollout, and a full mock walkthrough tying the whole method together.

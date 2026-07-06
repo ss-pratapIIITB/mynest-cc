@@ -1,0 +1,86 @@
+---
+title: "Scenario-Based Prep — Part 3: Customer & Crisis Scenarios"
+date: "2026-08-09"
+excerpt: "Four of the most common high-pressure prompts — an enterprise escalation, a launch with a safety flag, crisis communication, and an incident postmortem — each with a realistic prompt, a strong answer, the pitfalls, and likely follow-ups."
+tags: ["scenario-based", "leadership", "crisis", "postmortem", "prep", "series:scenario-prep"]
+series: "Scenario-Based Prep"
+seriesOrder: 3
+---
+
+# Customer & Crisis Scenarios
+
+These are the highest-pressure prompts, and the ones where composure shows most. Each below follows the same shape: **the prompt → what's really being tested → how to structure it → a strong answer → watch out for → likely follow-ups.** Lean on the method from Part 1 and the frameworks from Part 2.
+
+---
+
+## 1. Enterprise customer escalation
+
+> *"A strategic customer is furious — a workflow they depend on has been failing for two days and they feel ignored. They're on the phone now. How do you handle it?"*
+
+**What's tested:** emotional composure, not over-promising, and turning anger into a plan.
+
+**Structure:** acknowledge the emotion → *don't speculate* on cause → gather facts → rebuild trust with clear next steps.
+
+**A strong answer:** "First I'd acknowledge the impact and the frustration directly — 'this has cost you two days and we haven't communicated well; that's on us.' I would *not* guess at the cause on the call. I'd state what I know for certain, commit to a specific next update time, and put a single owner on their account so they're never wondering who to talk to. Then, in parallel, get engineering on root cause. The goal of *this* call is not to fix the bug live — it's to convert 'we're being ignored' into 'we have a named owner and a 3pm update.'"
+
+**Watch out for:** speculating about the cause to fill silence; promising a fix time you can't back; making it purely technical and forgetting the *relationship* is the thing on fire.
+
+**Likely follow-ups:** *"What if you promise 3pm and there's no fix?"* → send the update anyway ("no root cause yet, next update at 5pm") — a kept promise about *communication* rebuilds trust even without a fix. *"When do you loop in leadership?"* → inform early, keep it brief, and only pull them in if a commercial concession or exec-to-exec call is needed.
+
+---
+
+## 2. Product launch with a safety concern
+
+> *"You're days from a launch leadership wants badly, but your team flags that a key component isn't fully tested and could fail for some users. What do you do?"*
+
+**What's tested:** whether you can surface bad news transparently and frame a decision for others rather than silently deciding for them.
+
+**Structure:** present benefits *and* risks → escalate transparently → define what "not fully tested" concretely means → let leadership make an informed call.
+
+**A strong answer:** "I wouldn't unilaterally block or bless the launch — I'd frame the decision for the people who own it. I'd lay out the upside of launching on time, and the specific risk: *'not fully tested' means we haven't validated behavior under peak load, so an estimated small percentage of users could hit failures we can't yet bound.* Then I'd offer options: launch on time with a feature flag and a fast rollback, delay 72 hours to finish load testing, or a limited rollout to 5% first. My recommendation would be the staged rollout — it captures most of the timeline value while bounding the blast radius — but the call is leadership's, made with real information."
+
+**Watch out for:** vague risk language ("it might have issues"); framing it as launch-vs-no-launch when a staged path exists; hiding the risk to avoid being the person who slowed the launch.
+
+**Likely follow-ups:** *"Leadership says ship anyway."* → fine — document the risk and the decision, put the rollback and monitoring in place, and make sure the on-call and support teams know what to watch for. Disagree-and-commit, *with* the risk on record.
+
+---
+
+## 3. Crisis communication
+
+> *"There's a live incident affecting many customers. A reporter emails you directly for comment, and internally everyone's asking what to tell customers. What do you do?"*
+
+**What's tested:** knowing the limits of your authority and coordinating a single, calm message under pressure.
+
+**Structure — the Five P's:** Purpose, People, Process, Position, Priority. And three hard rules: don't speak beyond your authority, route media to official comms, start the root-cause analysis immediately.
+
+**A strong answer:** "I would *not* respond to the reporter myself — I'd route them to official communications with a one-line acknowledgment that we're aware and investigating. Internally I'd align on a single **position** so nobody freelances: what we know, what we're doing, and when the next update lands. **People** — affected customers get a proactive status update on a fixed cadence; Legal and Comms are looped in from minute one. **Process** — root-cause analysis starts in parallel, not after. **Priority** this hour is customer impact and an accurate message, not assigning blame."
+
+**Watch out for:** improvising a statement to the press; going silent with customers (a holding update beats silence); mixing up "what happened" (facts) with "why" (not yet known) in external messaging.
+
+**Likely follow-ups:** *"A customer asks if their data was exposed."* → don't confirm or deny beyond what's verified; say what you know, commit to a firm follow-up, and get security to confirm before any statement.
+
+---
+
+## 4. Incident postmortem
+
+> *"The incident is resolved. Run the postmortem. How do you structure it and what do you want to come out of it?"*
+
+**What's tested:** a blameless, structural mindset — facts before opinions, and prevention over punishment.
+
+**Structure:** an RCA template → capture facts (timeline) before opinions → **Five Whys** to the real cause → assign owners (a PIC per action) → prevention actions. Pair with **RACI** so every follow-up has exactly one accountable owner.
+
+**A strong answer:** "I'd start with a factual timeline — what happened and when — *before* anyone offers interpretation, so we don't anchor on a theory. Then Five Whys to get past the symptom: 'the service was down' → … → 'an infra change shipped with no review gate.' That points at a *structural* fix, not a person. Every action item gets one accountable owner and a date — via RACI so 'someone should' becomes 'X owns this by Friday.' And I'd keep it explicitly blameless: the goal is a system that fails less, not a name to attach to this one."
+
+**Watch out for:** jumping to fixes before the facts are agreed; a "root cause" that's really a person ("engineer X was careless"); action items with no owner or date, which never happen.
+
+**Likely follow-ups:** *"Two teams disagree on the root cause."* → both timelines are facts; reconcile them chronologically, and if two causes contributed, name both with separate prevention items.
+
+---
+
+## The through-line
+
+Customer and crisis scenarios reward the same instincts: **acknowledge the human impact, refuse to speculate, communicate on a fixed cadence, and convert chaos into named owners and next steps.** The framework (Five P's, Five Whys, RACI) is scaffolding; the score comes from the specifics you hang on it.
+
+---
+
+**Next — Part 4: Decisions & Prioritization** — running a decision meeting, engineering-vs-product trade-offs, compliance mid-build, and translating for mixed audiences.

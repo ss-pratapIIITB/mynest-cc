@@ -1,0 +1,127 @@
+---
+title: "Scenario-Based Prep — Part 2: The Frameworks Toolkit"
+date: "2026-08-08"
+excerpt: "Eight named frameworks that make your reasoning fast and legible — RAPID, Risk Matrix, Pause–Assess–Align, the Five P's, Five Whys, RACI, CAGE, and Jobs-To-Be-Done. What each is, when to reach for it, and a one-line example."
+tags: ["scenario-based", "frameworks", "leadership", "judgment", "prep", "series:scenario-prep"]
+series: "Scenario-Based Prep"
+seriesOrder: 2
+---
+
+# The Frameworks Toolkit
+
+Frameworks aren't magic words — they're **compression**. Naming "this is a RAPID question" lets you lay out a clean answer in seconds and signals you've seen the pattern before. Use them as scaffolding, not jargon: name it, then *apply* it to the specifics.
+
+Here are the eight worth knowing cold, each with what it is, when to reach for it, and how to use it.
+
+---
+
+## 1. RAPID — who decides, and how
+
+A decision-rights model that ends "who actually owns this call?" ambiguity. The letters are roles, not a sequence:
+
+- **R**ecommender — drives the analysis and proposes the answer.
+- **A**pprover(s) — must sign off.
+- **P**erform / **I**nput — those consulted for expertise or who execute.
+- **D**ecide — the single accountable decider.
+
+**When:** any "a decision is stuck / who should make this call" scenario.
+**How:** assign every role a name. The most common real-world failure is *too many deciders* — RAPID forces exactly one.
+
+---
+
+## 2. Risk Matrix — Likelihood × Impact
+
+Score each risk on two axes — how likely, how bad — and prioritize the top-right (high-likelihood, high-impact) first.
+
+**When:** "here are five things that could go wrong — what do we do about them?"
+**How:** don't treat all risks equally. A likely, catastrophic **data-integrity** bug outranks an unlikely, cosmetic one. Example triage: data integrity (high/high → fix now), performance under load (med/high → load-test before launch), a compliance gap (low-likelihood/high-impact → flag to legal, don't block).
+
+---
+
+## 3. Pause – Assess – Align
+
+The three-move response when something *unsafe or non-compliant* surfaces mid-execution.
+
+- **Pause** the risky work (not the whole project).
+- **Assess** the actual exposure with the right experts.
+- **Align** on a path with the people who own the risk before resuming.
+
+**When:** "you discover a compliance/security/safety problem while building." 
+**How:** the senior signal is pausing the *specific* risky path while keeping everything else moving — and bringing legal/compliance in *early*, not after.
+
+---
+
+## 4. The Five P's — crisis communication
+
+A checklist for what to say (and not say) when something is on fire and people want statements:
+
+- **Purpose** — why we're communicating right now.
+- **People** — who's affected and who needs to hear it.
+- **Process** — what we're doing about it.
+- **Position** — the single agreed message (no freelancing).
+- **Priority** — what matters most this hour.
+
+**When:** outages, security incidents, press-facing crises.
+**How:** don't speak beyond your authority; route media to official comms; keep Legal and Communications in the loop; start the root-cause analysis immediately in parallel.
+
+---
+
+## 5. Five Whys — root cause
+
+Ask "why" ~five times to walk past the symptom to the underlying cause. "The site went down" → why? → "the DB maxed connections" → why? → "a migration removed pooling" → why? → "no review gate on infra changes" → *there's* the real fix.
+
+**When:** postmortems and "why did this happen?" prompts.
+**How:** stop at a cause you can *act on structurally*, not a person to blame. Capture facts before opinions.
+
+---
+
+## 6. RACI — who does what
+
+For each task, label people **R**esponsible (does the work), **A**ccountable (owns the outcome — exactly one), **C**onsulted (gives input), **I**nformed (kept in the loop).
+
+**When:** "how would you organize this project / postmortem follow-up?"
+**How:** the discipline is one **A** per task. RACI pairs naturally with a postmortem's action items.
+
+---
+
+## 7. CAGE — should we expand here?
+
+A market-entry lens for "should we launch in country X?" — the distance that matters across four dimensions:
+
+- **C**ultural — language, norms, trust.
+- **A**dministrative — law, regulation, currency, politics.
+- **G**eographic — distance, time zones, infrastructure.
+- **E**conomic — income levels, cost structure, willingness to pay.
+
+**When:** global expansion / new-market scenarios.
+**How:** don't analyze all four equally — pick the **two or three** decision factors that dominate this specific market and go deep.
+
+---
+
+## 8. Jobs-To-Be-Done — pricing & product
+
+People "hire" a product to get a job done. Anchor pricing and product decisions on the *job and its value to the customer*, not on your cost.
+
+**When:** pricing strategy, "how would you price/position this?"
+**How:** pair JTBD with **customer conversations**, **willingness-to-pay** research, **competitive analysis**, and small **pricing experiments** — value first, cost second.
+
+---
+
+## Which framework, when — the cheat table
+
+| If the prompt is about… | Reach for |
+|---|---|
+| A stuck or unclear decision | **RAPID** |
+| Prioritizing multiple risks | **Risk Matrix** |
+| A compliance/safety issue mid-build | **Pause–Assess–Align** |
+| An outage or press-facing crisis | **Five P's** |
+| Why something broke | **Five Whys** |
+| Organizing tasks / accountability | **RACI** |
+| Entering a new market | **CAGE** |
+| Pricing or positioning | **Jobs-To-Be-Done** |
+
+Memorize the table, not paragraphs. In the moment you want to *recognize the shape* fast, name the framework, and then spend your time on the specifics — which is exactly what the next three parts drill, scenario by scenario.
+
+---
+
+**Next — Part 3: Customer & Crisis Scenarios** — enterprise escalations, launches with safety concerns, crisis comms, and the postmortem.
