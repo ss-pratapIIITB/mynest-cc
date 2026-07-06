@@ -6,6 +6,7 @@ import {
   TOTAL_PROBLEMS,
   TOTAL_TEMPLATES,
 } from "@/lib/practice-data";
+import { META_TOTAL } from "@/lib/practice-meta";
 
 export const metadata: Metadata = {
   title: "Practice — mynest.cc",
@@ -74,6 +75,29 @@ export default function PracticeIndex() {
           </span>
         </span>
         <span className="font-mono text-xs text-violet-500 group-hover:translate-x-0.5 transition-transform">
+          →
+        </span>
+      </Link>
+
+      {/* Focused session callout */}
+      <Link
+        href="/practice/meta"
+        className="group mt-3 flex items-center gap-3 p-4 rounded-xl border border-blue-200 dark:border-blue-500/25 bg-blue-50/60 dark:bg-blue-500/[0.06] hover:bg-blue-50 dark:hover:bg-blue-500/10 transition-colors"
+      >
+        <span className="flex-1">
+          <span className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 group-hover:text-blue-700 dark:group-hover:text-blue-300">
+              Lead Engineer Focus — E5
+            </span>
+            <span className="font-mono text-[9px] px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-500/15 text-blue-600 dark:text-blue-400">
+              meta
+            </span>
+          </span>
+          <span className="block font-mono text-[11px] text-zinc-500 dark:text-zinc-500 mt-0.5">
+            The current senior-IC loop + {META_TOTAL} high-frequency coding questions in Java
+          </span>
+        </span>
+        <span className="font-mono text-xs text-blue-500 group-hover:translate-x-0.5 transition-transform">
           →
         </span>
       </Link>
