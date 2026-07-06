@@ -5,9 +5,12 @@ import {
   META_CATEGORIES,
   META_SYSTEM_DESIGN,
   META_BEHAVIORAL,
+  META_RESOURCES,
   META_TOTAL,
 } from "@/lib/practice-meta";
 import { ProblemList } from "@/components/practice/problem-list";
+
+const RESOURCE_GROUPS = Array.from(new Set(META_RESOURCES.map((r) => r.group)));
 
 export const metadata: Metadata = {
   title: "Lead Engineer (E5) Focus — Practice — mynest.cc",
@@ -143,6 +146,49 @@ export default function MetaPracticePage() {
             </li>
           ))}
         </ul>
+      </section>
+
+      {/* Resources */}
+      <section className="mt-12 pt-8 border-t border-zinc-100 dark:border-zinc-800/60">
+        <h2 className="font-mono text-[10px] tracking-[0.18em] uppercase text-zinc-400 dark:text-zinc-600 mb-1">
+          Resources — articles & guides
+        </h2>
+        <p className="text-xs text-zinc-400 dark:text-zinc-600 mb-5">
+          Curated external prep. Some (LeetCode&apos;s Meta tag, a couple of guides) need a free
+          account.
+        </p>
+        <div className="space-y-6">
+          {RESOURCE_GROUPS.map((group) => (
+            <div key={group}>
+              <h3 className="font-mono text-[11px] text-zinc-500 dark:text-zinc-500 mb-2">
+                {group}
+              </h3>
+              <div className="space-y-2">
+                {META_RESOURCES.filter((r) => r.group === group).map((r) => (
+                  <a
+                    key={r.url}
+                    href={r.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="group flex items-start gap-3 p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 hover:border-blue-300 dark:hover:border-blue-500/40 hover:bg-zinc-50 dark:hover:bg-zinc-800/40 transition-colors"
+                  >
+                    <span className="flex-1">
+                      <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                        {r.title}
+                      </span>
+                      <span className="block text-xs text-zinc-500 dark:text-zinc-500 mt-0.5 leading-relaxed">
+                        {r.note}
+                      </span>
+                    </span>
+                    <span className="font-mono text-xs text-zinc-300 dark:text-zinc-700 group-hover:text-blue-500 transition-colors flex-shrink-0 mt-0.5">
+                      ↗
+                    </span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
     </main>
   );
