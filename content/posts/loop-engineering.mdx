@@ -1,0 +1,137 @@
+---
+title: "Loop Engineering: Stop Prompting, Start Designing the Loop"
+date: "2026-08-12"
+excerpt: "The skill that matters with coding agents is no longer the words you type — it's the loop you put them in. A field guide to loop engineering: what the loop is, what makes a good one, how to stack loops, and how to keep it safe."
+tags: ["ai", "agents", "loop-engineering", "llm", "engineering"]
+---
+
+# Loop Engineering: Stop Prompting, Start Designing the Loop
+
+In June 2026 a single line kept getting quoted: *"I don't prompt Claude anymore."* It came from Boris Cherny, who works on Claude Code, and it landed because it named a shift a lot of people were already feeling. A few days earlier Peter Steinberger — the developer behind the OpenClaw agent — had argued the same thing to millions of readers: the relevant skill is no longer *prompting* a coding agent, it's **designing the loops that prompt it for you**. The phrase that stuck was **loop engineering**.
+
+If you've watched an agent grind through a failing test suite until it goes green — without you touching the keyboard — you've seen why. The leverage stopped being in the sentence you type. It moved into the *cycle* the model runs in.
+
+---
+
+## The migration outward
+
+It helps to see loop engineering as the latest step in a steady migration *away from the keystroke*:
+
+1. **Prompt engineering** (~2022–2024) — you optimized the **words** you typed.
+2. **Context engineering** (~2025) — you optimized the **information the model sees**: retrieval, memory, tool definitions, what goes in the window.
+3. **Loop engineering** (2026) — you optimize the **cycle that drives the model**: the goal, the tools, the checks, the stop condition, and the environment it all runs in.
+
+Each step moves your attention one layer out — from the words, to the context, to the environment, to the loop. You stop being the person who prompts the agent and start being the person who *designs the system that prompts it*.
+
+---
+
+## What an agent actually is
+
+The cleanest definition comes from Simon Willison, whose September 2025 essay *["Designing agentic loops"](https://simonwillison.net/2025/Sep/30/designing-agentic-loops/)* was the early, precise articulation of all this. An LLM agent, he says, is simply:
+
+> something that **runs tools in a loop to achieve a goal**.
+
+That's it. The intelligence isn't in any single call — it's in the repetition. The model acts, looks at what happened, and acts again, converging on a goal. Written out, the loop is a small state machine:
+
+```text
+loop:
+    PLAN     — decide the next action toward the goal
+    ACT      — call a tool (run a command, edit a file, query an API)
+    OBSERVE  — read the result (test output, error, diff, logs)
+    EVALUATE — are we closer? did a check pass?
+    REVISE   — update the plan
+until  goal met  OR  resource budget exhausted
+```
+
+The model doesn't exit until an **objective-based stop condition** is satisfied or a **budget** runs out. Everything interesting in loop engineering is a decision about one of those five verbs — or about the stop condition.
+
+---
+
+## Why the loop is the leverage point
+
+Here's the counterintuitive part. Once you have a *good* loop, the specific prompt matters much less, because the loop lets the model **brute-force its way to a working answer**. Willison's observation: if you can reduce a problem to a **clear goal** and a **set of tools that iterate toward it**, a coding agent can often just... get there — trying, failing, reading the error, and trying again far faster than you could.
+
+That reframes your job. You're no longer hand-crafting the perfect instruction. You're building the arena: *what's the goal, what tools can it use, how does it know it's winning, and when does it stop?* Get those right and the agent does the grinding.
+
+---
+
+## What makes a good loop
+
+Not every problem loops well. The ones that do share three traits:
+
+- **A clear, checkable goal.** "Make the test suite pass," "get the Docker image under 200MB," "upgrade this dependency without breaking anything." The agent needs to *know* when it's done.
+- **Fast, honest feedback.** This is why **automated tests are a force multiplier** — they turn "is this right?" into an instant, objective signal the loop can act on. Debugging, performance tuning, dependency upgrades, and size reduction all shine because each has a built-in scoreboard.
+- **Tools it can iterate with.** Willison prefers exposing **shell commands directly** over elaborate frameworks — agents are already fluent in `git`, `grep`, test runners, and package managers, so let them use what they know.
+
+The corollary: if a task has no way to *verify* progress, loop engineering won't save you. Your first move is often to *build the scoreboard* — a test, a linter, a metric — so the loop has something to climb.
+
+---
+
+## The anatomy of a real loop
+
+Addy Osmani's *Loop Engineering* essay gave the practice both its name and a parts list. A production-grade loop is rarely just "model + shell." It's assembled from:
+
+- **Automations** — the triggers and schedules that start runs without a human.
+- **Worktrees** — isolated copies of the repo so parallel agents don't collide.
+- **Skills** — reusable, packaged capabilities the agent can invoke.
+- **Connectors** — access to the outside world: APIs, issue trackers, chat.
+- **Sub-agents** — specialized loops the main loop can delegate to.
+- **External state** — memory and artifacts that persist *between* runs, so the loop isn't amnesiac.
+
+You don't need all six on day one. But naming them is useful: when a loop underperforms, the fix is usually a missing piece here — no persistent state, or no isolation, or no way to verify.
+
+---
+
+## Stacking loops
+
+The real power move, which LangChain lays out well in *["The Art of Loop Engineering"](https://www.langchain.com/blog/the-art-of-loop-engineering)*, is that loops **stack** — each outer loop makes the inner ones better:
+
+1. **Agent loop** — the model calls tools until the task is done. This is the core.
+2. **Verification loop** — a *grader* checks the agent's output against a quality bar and hands back feedback for a retry. The agent stops being trusted blindly.
+3. **Event-driven loop** — external events (a Slack message, a new issue, a cron tick) trigger runs, embedding the agent into your systems for continuous operation.
+4. **Hill-climbing loop** — production traces feed an analysis agent that *improves the harness itself* — better prompts, better tools, better stop conditions. The system tunes the system.
+
+The elegant bit: the outermost loop's feedback reaches *inside* and upgrades the inner loops. Each turn of the outer crank makes the agent loop a little sharper. That's how you get from "a clever demo" to "a reliable worker."
+
+---
+
+## Keeping the loop safe
+
+Autonomy cuts both ways. The same "no approvals, just go" setting — Willison calls it **YOLO mode** — that makes an agent dramatically faster also lets it do real damage if the loop goes sideways. The discipline that makes speed safe:
+
+- **Sandbox it.** Run loops in ephemeral, network-restricted containers (throwaway dev containers, isolated environments) so a bad action can't reach anything that matters.
+- **Scope the credentials.** Give test/staging access only, never production keys. Willison's concrete trick: when he needed an agent to iterate on deploy configs, he spun up a dedicated org with a **$5 budget cap** and an API key bound to it — the blast radius was literally five dollars.
+- **Put humans at the seams.** Keep human-in-the-loop checkpoints at the *sensitive* decisions — not every step, but the ones that spend money, ship to users, or touch data.
+
+The goal isn't to remove the guardrails that make YOLO mode fast. It's to make the environment one where going fast can't go catastrophically wrong.
+
+---
+
+## How to start
+
+You don't need a six-layer harness to begin. A practical first loop:
+
+1. **Pick a task with a scoreboard** — a failing test, a flaky build, a slow endpoint. Something with an objective "done."
+2. **Give the agent the tools, not a framework** — shell access to the test runner, the profiler, `git`.
+3. **Sandbox it and cap the budget** — a throwaway container, scoped creds, a spending limit.
+4. **Let it loop** — and watch where it struggles. That struggle *is* your next design task: usually a missing check, missing state, or missing isolation.
+5. **Add one loop out** — a verifier that grades the result, then a trigger that starts it on an event.
+
+You'll notice your own role change as you go — from typing instructions, to designing the arena, to tuning the machine that tunes itself.
+
+---
+
+## The one-line version
+
+Prompt engineering optimized the words. Context engineering optimized what the model sees. **Loop engineering optimizes the cycle it runs in** — a clear goal, tools that iterate, a way to check progress, a stop condition, and a safe place to do it. Master that, and you stop prompting the agent and start *designing the system that prompts it.*
+
+---
+
+### Further reading & credit
+
+This is a synthesis of ideas from the people who defined the space — worth reading in the original:
+
+- Simon Willison — *[Designing agentic loops](https://simonwillison.net/2025/Sep/30/designing-agentic-loops/)* (Sep 2025), the early, precise framing.
+- Addy Osmani — *Loop Engineering*, which named the practice and its anatomy.
+- LangChain — *[The Art of Loop Engineering](https://www.langchain.com/blog/the-art-of-loop-engineering)*, on stacking loops.
+- Peter Steinberger and Boris Cherny, whose posts ("I don't prompt Claude anymore") turned it into a movement — and Swyx's *loopcraft* and Andrej Karpathy's context-engineering threads, which set the stage.
