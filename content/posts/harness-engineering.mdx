@@ -1,0 +1,104 @@
+---
+title: "Harness Engineering: How OpenAI Builds Software Agent-First"
+date: "2026-08-13"
+excerpt: "OpenAI reported shipping a million-line beta product in five months with no manually written source code — a small team directing Codex agents. The methodology behind it is harness engineering: you stop writing code and start building the rig that lets agents write it reliably."
+tags: ["ai", "agents", "harness-engineering", "codex", "llm", "engineering"]
+---
+
+# Harness Engineering: How OpenAI Builds Software Agent-First
+
+Here's the claim that got everyone's attention. In its February 2026 post *["Harness engineering: leveraging Codex in an agent-first world"](https://openai.com/index/harness-engineering/)*, OpenAI reported that over a **five-month** experiment, a small team of engineers shipped a **beta product of roughly a million lines of code — without manually writing any of the source code.** The humans directed agents; the agents wrote the application logic, the tests, the CI config, the observability, and the tooling.
+
+The obvious question is *how*, and the answer isn't "the model got smart enough." It's that the team stopped doing the coding and started building the **harness** — the rig of scaffolding, feedback loops, and checks that lets agents produce reliable software at scale. They called the discipline **harness engineering**.
+
+If [loop engineering](/blog/loop-engineering) is about designing the *cycle* an agent runs in, harness engineering is the bigger container around it: the whole environment that makes an agent-first workflow *trustworthy*.
+
+---
+
+## The harness, defined
+
+A **harness** is everything wrapped around the raw model that turns it from a clever text generator into a dependable software worker: the tools it can call, the environment it runs in, the documents it reads, the checks that grade its work, and the feedback it gets. The model is one component. The harness is the system.
+
+OpenAI's framing is that this scaffolding gets **encoded into machine-readable artifacts** — design specs, execution plans, architectural constraints — that agents reference as a *single source of truth* while they execute. The insight is subtle but load-bearing: **documentation stops being for humans and becomes an interface for agents.** A spec isn't a description of what you'll build; it's an instruction the agent will follow.
+
+The role shift falls out of that. Instead of implementing code, the engineers spend their time **designing environments, specifying intent, and providing structured feedback.** The work becomes, in their words, systems, scaffolding, and leverage.
+
+---
+
+## The components of a working harness
+
+From OpenAI's account, a production harness has five recurring parts. None is exotic on its own — the leverage comes from assembling them.
+
+### 1. Machine-readable scaffolding
+
+The foundation. Design specifications, execution plans, and architectural constraints written in a form agents can *parse and obey*, not just read. This is the single source of truth: when an agent needs to know how the auth layer works or which patterns are allowed, it looks here rather than guessing. (If you've ever added an `AGENTS.md` to a repo, you've written a primitive version of exactly this.)
+
+The discipline is to keep intent and constraints *explicit and current*. A stale spec doesn't just confuse a teammate — it actively steers an agent wrong, at machine speed.
+
+### 2. Feedback loops through PRs and CI
+
+Agents don't merge to `main` on vibes. In OpenAI's setup, Codex agents **open pull requests, evaluate the changes, and iterate until the task criteria are met** — with engineers guiding through the normal PR and CI machinery. The existing review surface becomes the human-in-the-loop control point: agents propose and validate; humans steer at the seams that matter.
+
+This is why the harness rides on *ordinary* engineering infrastructure. PRs, CI, and code review already encode "is this change good and safe?" — the harness just points an agent at them.
+
+### 3. Evals as the quality gate
+
+The part teams skip and regret. OpenAI leans on **evaluation suites that match real-world distributions** so regressions get caught early, and — crucially for agents — on **grading the agent's *trace* directly**, not just its final output. For a long, multi-step task, "did the last line compile?" tells you almost nothing; grading the reasoning and the steps tells you whether the agent actually did the right thing for the right reasons.
+
+Evals are to an agent workflow what tests are to a human one — except they also have to judge *process*, since an agent can reach a plausible-looking wrong answer through a broken path.
+
+### 4. Telemetry and observability
+
+Agents get the same instruments a good on-call engineer would want: **logs, metrics, and spans.** With telemetry wired in, an agent can monitor application behavior, **reproduce a bug**, and validate that its fix actually worked — closing the loop without a human relaying symptoms. Observability isn't an afterthought here; it's a *sense organ* for the agent.
+
+### 5. Isolated environments
+
+All of the above runs inside **isolated, reproducible environments** — so agents can work (and fail) in parallel without stepping on each other or on anything that matters. Isolation is what makes autonomy affordable: a bad action is contained, and ten agents can run at once.
+
+---
+
+## Why it produces leverage
+
+Put the parts together and the leverage is clear. You **encode intent and constraints once**, in a form agents consume, and then agents execute *across the entire workflow* — code, tests, CI, observability, tooling — iterating against real feedback until the criteria are met. The human cost is front-loaded into the harness; the marginal cost of the next feature drops toward the cost of *specifying* it well.
+
+That's how a small team supervises a million lines. They aren't typing faster. They've built a system where the typing is delegated and the *judgment* — what to build, what "correct" means, when it's safe to ship — stays with them.
+
+---
+
+## Harness vs. loop — how they fit
+
+It's worth being precise, because the terms get blurred:
+
+- The **loop** is the cycle a single agent runs: plan, act, observe, evaluate, revise, until a goal or budget stops it.
+- The **harness** is the whole rig the loop lives in: the specs it reads, the tools it calls, the evals that grade it, the telemetry it senses, the environment that contains it, the PR gate a human watches.
+
+Loop engineering tunes the cycle. Harness engineering builds the world the cycle runs in. OpenAI's post is essentially the industrial-scale version of the same shift: from *writing the software* to *engineering the system that writes the software.*
+
+---
+
+## What to steal, even if you're not OpenAI
+
+You don't need a million-line ambition to adopt the practices. The transferable moves:
+
+1. **Write docs for agents, not just humans.** A clear `AGENTS.md`, explicit specs, and stated architectural constraints pay off immediately — they're the agent's source of truth.
+2. **Invest in evals early.** Build a small suite that reflects real usage, and grade the *trace* on multi-step tasks, not only the final diff.
+3. **Give agents telemetry.** Logs, metrics, and traces let an agent diagnose and verify its own work instead of guessing.
+4. **Isolate and parallelize.** Ephemeral, sandboxed environments make autonomy safe and let you run many agents at once.
+5. **Keep humans on the PR seam.** Let agents propose through pull requests and CI; put your review where the risk is, not on every keystroke.
+
+Each one is useful on its own. Together, they *are* the harness.
+
+---
+
+## The one-line version
+
+The model is not the product — **the harness is.** OpenAI's agent-first result came not from a better model but from encoding intent, constraints, evals, telemetry, and isolation into a system agents could execute against. Harness engineering is the work of building that system: you stop writing the code and start engineering the environment that writes it — and grades it, and proves it works.
+
+---
+
+### Further reading & credit
+
+- OpenAI — *[Harness engineering: leveraging Codex in an agent-first world](https://openai.com/index/harness-engineering/)* (Feb 2026), the primary account and the source of the numbers here.
+- InfoQ — *[OpenAI Introduces Harness Engineering](https://www.infoq.com/news/2026/02/openai-harness-engineering-codex/)*, a concise write-up of the same.
+- Addy Osmani — *[Agent Harness Engineering](https://addyosmani.com/blog/agent-harness-engineering/)*, for the broader anatomy.
+- And the companion piece on the cycle inside the rig: *[Loop Engineering](/blog/loop-engineering)*.
