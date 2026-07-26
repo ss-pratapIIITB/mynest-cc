@@ -3,6 +3,9 @@ import ScoreChart from "@/components/ceo/score-chart";
 import RoadmapTimeline from "@/components/ceo/roadmap-timeline";
 import PillarCard from "@/components/ceo/pillar-card";
 import DailyPlanner from "@/components/ceo/daily-planner";
+import DailyCheckin from "@/components/ceo/daily-checkin";
+import BookShelf from "@/components/ceo/book-shelf";
+import PodcastList from "@/components/ceo/podcast-list";
 import { PILLARS, HEALTH_PLAN, VISION } from "@/lib/ceo-plan";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +46,10 @@ export default function CeoDashboardPage() {
           </button>
         </form>
       </header>
+
+      <Section title="TODAY — MIND & BODY CHECK-IN">
+        <DailyCheckin />
+      </Section>
 
       <Section title="STRENGTHS & GROWTH AREAS — WHOLE PERSON ASSESSMENT">
         <ScoreChart />
@@ -91,6 +98,14 @@ export default function CeoDashboardPage() {
             </div>
           ))}
         </div>
+      </Section>
+
+      <Section title="THE READING LIST">
+        <BookShelf />
+      </Section>
+
+      <Section title="PODCASTS & AUDIO">
+        <PodcastList />
       </Section>
 
       <Section title="DAY-TO-DAY PLANNER — EDIT FREELY, IT'S YOURS">
