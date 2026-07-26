@@ -117,6 +117,18 @@ export const BOOK_CATEGORIES: BookCategory[] = [
     ],
   },
   {
+    id: "situated-cognition",
+    name: "Situated Cognition & Environment Design",
+    books: [
+      { title: "Mind in Motion", author: "Barbara Tversky", why: "The Knowledge Project's 'Action Shapes Thought' episode (#146) distilled into a book — the Nine Laws of Cognition and the core argument that space and action, not language, are the foundation of thought." },
+      { title: "The Extended Mind", author: "Annie Murphy Paul", why: "A practical synthesis of situated/extended cognition research — notebooks, gesture, physical space, and other people treated as literal thinking tools, not just aids." },
+      { title: "Supersizing the Mind", author: "Andy Clark", why: "The denser academic case, with David Chalmers' original extended-mind argument, for why cognition doesn't stop at the skull — worth it once the popular treatments feel too thin." },
+      { title: "Nudge", author: "Richard Thaler & Cass Sunstein", why: "Choice architecture — how the default settings of an environment quietly decide outcomes before a conscious decision ever gets made." },
+      { title: "Where Good Ideas Come From", author: "Steven Johnson", why: "Why some physical and social environments (coffeehouses, cities, labs) produce far more innovation than others — a strategic case for designing space, not just habits." },
+      { title: "The Art of Noticing", author: "Rob Walker", why: "A practical exercise book for actually perceiving the environment you're in rather than the one you've stopped seeing — presence applied specifically to physical space." },
+    ],
+  },
+  {
     id: "founders",
     name: "Founder Stories & Company Case Studies",
     books: [
