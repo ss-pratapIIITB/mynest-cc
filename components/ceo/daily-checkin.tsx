@@ -5,12 +5,14 @@ import { todayKey, lastNDayKeys, shortDayLabel } from "@/lib/ceo-dates";
 
 type Energy = "low" | "medium" | "high";
 type Pain = "none" | "back" | "other";
+type Presence = "scattered" | "mixed" | "present";
 
 interface CheckinEntry {
   energy: Energy;
   fog: boolean;
   pain: Pain;
   painNote: string;
+  presence: Presence;
   sleepHours: number | null;
   priorities: [string, string, string];
 }
@@ -21,7 +23,7 @@ const LOG_KEY = "ceo:checkins";
 const HISTORY_DAYS = 14;
 
 function emptyEntry(): CheckinEntry {
-  return { energy: "medium", fog: false, pain: "none", painNote: "", sleepHours: null, priorities: ["", "", ""] };
+  return { energy: "medium", fog: false, pain: "none", painNote: "", presence: "mixed", sleepHours: null, priorities: ["", "", ""] };
 }
 
 function suggestionsFor(entry: CheckinEntry): string[] {
@@ -33,6 +35,9 @@ function suggestionsFor(entry: CheckinEntry): string[] {
   }
   if (entry.fog) {
     out.push("Hydrate, get 10 minutes of daylight or movement, and delay any big decision by 30 minutes until it clears.");
+  }
+  if (entry.presence === "scattered") {
+    out.push("You're mostly elsewhere today — run the Presence Reset below before anything else, then come back to the task.");
   }
   if (entry.energy === "low" && entry.sleepHours !== null && entry.sleepHours < 6) {
     out.push("Protect tonight's wind-down habit and avoid stacking hard conversations after 3pm today.");
@@ -62,7 +67,9 @@ export default function DailyCheckin() {
       const raw = localStorage.getItem(LOG_KEY);
       const parsed: CheckinLog = raw ? JSON.parse(raw) : {};
       setLog(parsed);
-      if (parsed[key]) setEntry(parsed[key]);
+      // Merge over defaults so entries saved before a new field (e.g. presence)
+      // was added still hydrate cleanly.
+      if (parsed[key]) setEntry({ ...emptyEntry(), ...parsed[key] });
     } catch {}
     setLoaded(true);
   }, [key]);
@@ -79,6 +86,7 @@ export default function DailyCheckin() {
   const history = useMemo(() => lastNDayKeys(HISTORY_DAYS), []);
   const fogDays = history.filter((d) => log[d]?.fog).length;
   const painDays = history.filter((d) => log[d]?.pain && log[d]?.pain !== "none").length;
+  const scatteredDays = history.filter((d) => log[d]?.presence === "scattered").length;
 
   if (!loaded) return null;
 
@@ -124,6 +132,28 @@ export default function DailyCheckin() {
             >
               foggy
             </button>
+          </div>
+
+          <p className="font-mono text-[9px] tracking-widest mb-2" style={{ color: "var(--subtle)" }}>PRESENCE — ARE YOU ACTUALLY HERE RIGHT NOW</p>
+          <div className="flex gap-2 mb-4">
+            {(["scattered", "mixed", "present"] as Presence[]).map((p) => (
+              <button
+                key={p}
+                onClick={() => setEntry((prev) => ({ ...prev, presence: p }))}
+                className="flex-1 rounded-lg py-1.5 font-mono text-[10px] capitalize cursor-pointer"
+                style={
+                  entry.presence === p
+                    ? {
+                        background: `${{ scattered: "#d03b3b", mixed: "#fab219", present: "#0ca30c" }[p]}22`,
+                        border: `1px solid ${{ scattered: "#d03b3b", mixed: "#fab219", present: "#0ca30c" }[p]}`,
+                        color: { scattered: "#d03b3b", mixed: "#fab219", present: "#0ca30c" }[p],
+                      }
+                    : { background: "var(--bg)", border: "1px solid var(--border)", color: "var(--muted)" }
+                }
+              >
+                {p}
+              </button>
+            ))}
           </div>
 
           <p className="font-mono text-[9px] tracking-widest mb-2" style={{ color: "var(--subtle)" }}>PHYSICAL PAIN</p>
@@ -222,6 +252,7 @@ export default function DailyCheckin() {
                   >
                     {day?.pain && day.pain !== "none" && <span className="text-[9px]">🔴</span>}
                     {day?.fog && <span className="text-[9px]">💭</span>}
+                    {day?.presence === "scattered" && <span className="text-[9px]">🌀</span>}
                   </div>
                   <span className="font-mono text-[8px]" style={{ color: "var(--subtle)" }}>{shortDayLabel(d)}</span>
                 </div>
@@ -229,17 +260,25 @@ export default function DailyCheckin() {
             })}
           </div>
 
-          <div className="flex gap-4">
+          <div className="flex flex-wrap gap-4">
             <p className="font-mono text-[10px]" style={{ color: fogDays >= 5 ? "#d03b3b" : "var(--muted)" }}>
               Brain fog: {fogDays}/{HISTORY_DAYS} days
             </p>
             <p className="font-mono text-[10px]" style={{ color: painDays >= 5 ? "#d03b3b" : "var(--muted)" }}>
               Pain: {painDays}/{HISTORY_DAYS} days
             </p>
+            <p className="font-mono text-[10px]" style={{ color: scatteredDays >= 5 ? "#d03b3b" : "var(--muted)" }}>
+              Not present: {scatteredDays}/{HISTORY_DAYS} days
+            </p>
           </div>
           {(fogDays >= 5 || painDays >= 5) && (
             <p className="font-mono text-[10px] leading-relaxed mt-2" style={{ color: "#d03b3b" }}>
               That&apos;s a pattern, not a bad day. Worth an actual doctor/physio visit, not another workaround.
+            </p>
+          )}
+          {scatteredDays >= 5 && (
+            <p className="font-mono text-[10px] leading-relaxed mt-2" style={{ color: "#d03b3b" }}>
+              Not present most days is also a pattern. The daily presence habit and the reset tool below exist specifically for this — use them before adding anything else to the plan.
             </p>
           )}
         </div>

@@ -4,6 +4,7 @@ import RoadmapTimeline from "@/components/ceo/roadmap-timeline";
 import PillarCard from "@/components/ceo/pillar-card";
 import DailyPlanner from "@/components/ceo/daily-planner";
 import DailyCheckin from "@/components/ceo/daily-checkin";
+import PresenceReset from "@/components/ceo/presence-reset";
 import BookShelf from "@/components/ceo/book-shelf";
 import PodcastList from "@/components/ceo/podcast-list";
 import { PILLARS, HEALTH_PLAN, VISION } from "@/lib/ceo-plan";
@@ -48,7 +49,10 @@ export default function CeoDashboardPage() {
       </header>
 
       <Section title="TODAY — MIND & BODY CHECK-IN">
-        <DailyCheckin />
+        <div className="space-y-4">
+          <DailyCheckin />
+          <PresenceReset />
+        </div>
       </Section>
 
       <Section title="STRENGTHS & GROWTH AREAS — WHOLE PERSON ASSESSMENT">

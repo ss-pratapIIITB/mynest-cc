@@ -104,6 +104,19 @@ export const BOOK_CATEGORIES: BookCategory[] = [
     ],
   },
   {
+    id: "flow-presence",
+    name: "Flow, Presence & Attention",
+    books: [
+      { title: "Flow", author: "Mihaly Csikszentmihalyi", why: "The original research defining the state itself — the vocabulary for exactly what deep, restorative peak performance actually is." },
+      { title: "Wherever You Go, There You Are", author: "Jon Kabat-Zinn", why: "Secular, practical mindfulness without the mysticism — the clearest how-to for a daily presence practice." },
+      { title: "The Power of Now", author: "Eckhart Tolle", why: "Unconventional for a business list, but the most direct case available for presence as the root skill under everything else, including flow." },
+      { title: "Full Catastrophe Living", author: "Jon Kabat-Zinn", why: "The full clinical program behind mindfulness-based stress reduction — deeper and more structured than the primer above." },
+      { title: "The Rise of Superman", author: "Steven Kotler", why: "Flow-state research applied to extreme performers — concrete, engineerable triggers rather than abstract theory." },
+      { title: "Stealing Fire", author: "Steven Kotler & Jamie Wheal", why: "How top performers and organizations access altered/flow states deliberately and at scale — a natural next step once a basic daily practice is in place." },
+      { title: "10% Happier", author: "Dan Harris", why: "A skeptical journalist's account of adopting meditation — useful if the spiritual framing elsewhere on this list is a barrier for you specifically." },
+    ],
+  },
+  {
     id: "founders",
     name: "Founder Stories & Company Case Studies",
     books: [
