@@ -32,6 +32,12 @@ export default function Nav() {
         /practice
       </Link>
       <Link
+        href="/board"
+        className="font-mono text-xs text-zinc-500 dark:text-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-300 transition-colors hidden sm:block"
+      >
+        /board
+      </Link>
+      <Link
         href="/play"
         className="font-mono text-xs text-zinc-500 dark:text-zinc-600 hover:text-zinc-800 dark:hover:text-zinc-300 transition-colors hidden sm:block"
       >
